@@ -78,7 +78,9 @@ case "$1" in
         # Must stop before attempting to remove the user, else that will fail.
         # Use || /bin/true to ignore a failure, because set -e is in effect.
         rm -f /etc/monit/conf.d/$NAME.monit
+        rm -f /etc/icinga/objects/cw_ralf_icinga.cfg
         service monit restart
+        service icinga reload
         service $NAME stop || /bin/true
         if [ $1 != "upgrade" ]; then
             remove_user
