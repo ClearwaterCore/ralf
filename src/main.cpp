@@ -356,7 +356,9 @@ int main(int argc, char**argv)
 
   if (options.alarms_enabled)
   {
-    // Create Ralf's alarm objects
+    // Create Ralf's alarm objects. Note that the alarm identifier strings must match those
+    // in the alarm definition JSON file exactly.
+
     cdf_comm_monitor = new CommunicationMonitor("ralf", "RALF_CDF_COMM_ERROR_CLEAR",
                                                         "RALF_CDF_COMM_ERROR_CRITICAL");
 
