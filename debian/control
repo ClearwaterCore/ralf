@@ -20,7 +20,8 @@ Package: ralf-dbg
 Architecture: any
 Section: debug
 Priority: extra
-Depends: ralf (= ${binary:Version}), ralf-libs-dbg (= ${binary:Version}), gdb, chronos-dbg
+Depends: ralf (= ${binary:Version})
+Recommends: gdb, ralf-libs-dbg, chronos-dbg
 Description: Debugging symbols for ralf
 
 Package: ralf-libs
