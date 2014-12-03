@@ -247,7 +247,7 @@ void exception_handler(int sig)
   signal(SIGSEGV, SIG_DFL);
 
   // Log the signal, along with a backtrace.
-  CL_RALF_CRASHED.log();
+  CL_RALF_CRASHED.log(strsignal(sig));
   closelog();
   LOG_BACKTRACE("Signal %d caught", sig);
 
