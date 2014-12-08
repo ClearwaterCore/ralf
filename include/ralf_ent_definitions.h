@@ -91,7 +91,7 @@ const static PDLog2<const char*, int> CL_RALF_HTTP_ERROR
 (
   PDLogBase::CL_RALF_ID + 5,
   PDLOG_ERR,
-  "The HTTP stack has encountered an error in function %s with error %d",
+  "The HTTP stack has encountered an error in function %s with error %d.",
   "Ralf encountered an error when attempting to make an HTTP connection to Chronos.",
   "The interface to Chronos has failed.  Ralf can't use timer services.",
   "Report this issue to support."
