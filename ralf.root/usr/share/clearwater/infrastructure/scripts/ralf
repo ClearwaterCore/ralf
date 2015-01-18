@@ -40,30 +40,13 @@ ralf_secure_listen_port=5659
 
 # Allow a specific FQDN for Ralf to be set (in case this is an
 # all-in-one node running both ralf and homestead Diameter stacks).
-# Otherwise, fall back to the public hostname.
-
-identity=$ralf_diameteridentity
+# Otherwise, fall back to the public hostname (and fail if that is absent).
+identity=${ralf_diameteridentity:-${public_hostname:?}}
 
 acl_required=false
 
-if [[ -z "$identity" ]];
-then
-    if [[ -z "$public_hostname" ]];
-    then
-        echo "ERROR: must have a public_hostname set in /etc/clearwater/config" >&2
-        exit 1
-    fi
-    identity=$public_hostname
-fi
-
-if [[ -z "$ralf_hostname" ]];
-then
-    echo "ERROR: must have a ralf_hostname set in /etc/clearwater/config" >&2
-    exit 1
-fi
-
 # Strip any characters not valid in an FQDN out of ralf_hostname (for
 # example, it might be an IPv6 address)
-realm=$(echo $ralf_hostname | sed -e 's/:[^:]*$//g' | sed -e 's/^\[//g' | sed -e 's/\]$//g')
+realm=$(echo ${ralf_hostname:?} | sed -e 's/:[^:]*$//g' | sed -e 's/^\[//g' | sed -e 's/\]$//g')
 
 /usr/share/clearwater/bin/generic_create_diameterconf ralf $identity $realm $ralf_listen_port $ralf_secure_listen_port $acl_required
