@@ -127,7 +127,7 @@ LDFLAGS += -lzmq \
            -lboost_date_time \
            -lc \
            -lboost_system \
-           -lboost_filesystem
+           -lboost_filesystem \
            -lz
 
 # Test build uses just-built libraries, which may not be installed
