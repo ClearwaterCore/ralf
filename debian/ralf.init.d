@@ -165,7 +165,8 @@ get_daemon_args()
                      $init_token_rate_arg
                      $min_token_rate_arg
                      $exception_max_ttl_arg
-                     --sas=$sas_server,$NAME@$public_hostname"
+                   --sas=$sas_server,$NAME@$public_hostname
+                   --memcached-write-format=binary"
 
         [ "$http_blacklist_duration" = "" ]     || DAEMON_ARGS="$DAEMON_ARGS --http-blacklist-duration=$http_blacklist_duration"
         [ "$diameter_blacklist_duration" = "" ] || DAEMON_ARGS="$DAEMON_ARGS --diameter-blacklist-duration=$diameter_blacklist_duration"
