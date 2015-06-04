@@ -136,7 +136,7 @@ const static struct option long_opt[] =
   {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
   {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
-  { "sas-compression-enabled",    no_argument,       NULL, OPT_SAS_COMPRESSION_DISABLED},
+  { "sas-compression-disabled",   no_argument,       NULL, OPT_SAS_COMPRESSION_DISABLED},
   {NULL,                          0,                 NULL, 0},
 };
 
