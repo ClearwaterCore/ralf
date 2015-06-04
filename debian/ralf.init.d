@@ -142,7 +142,7 @@ get_daemon_args()
           alarms_enabled_arg="--alarms-enabled"
         fi
 
-        [ "$sas_compression_enabled" != "Y" ] || sas_compression_enabled_arg="--sas-compression-enabled"
+        [ "$sas_compression_disabled" != "Y" ] || sas_compression_disabled_arg="--sas-compression-disabled"
       
         [ -z "$target_latency_us" ] || target_latency_us_arg="--target-latency-us=$target_latency_us"
         [ -z "$max_tokens" ] || max_tokens_arg="--max-tokens=$max_tokens"
@@ -169,7 +169,8 @@ get_daemon_args()
                      $exception_max_ttl_arg
                    --sas=$sas_server,$NAME@$public_hostname
                    --memcached-write-format=binary
-                     $sas_compression_enabled_arg"
+                     $sas_compression_disabled_arg"
+
 
 
         [ "$http_blacklist_duration" = "" ]     || DAEMON_ARGS="$DAEMON_ARGS --http-blacklist-duration=$http_blacklist_duration"
