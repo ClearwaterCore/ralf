@@ -127,13 +127,14 @@ LDFLAGS += -lzmq \
            -lboost_date_time \
            -lc \
            -lboost_system \
-           -lboost_filesystem
+           -lboost_filesystem \
+           -lz
 
 # Test build uses just-built libraries, which may not be installed
 LDFLAGS_TEST += -Wl,-rpath=$(ROOT)/usr/lib
 
 # Test build also uses libcurl (to verify HttpStack operation)
-LDFLAGS_TEST += -lcurl
+LDFLAGS_TEST += -lcurl -ldl
 
 # Now the GMock / GTest boilerplate.
 GTEST_HEADERS := $(GTEST_DIR)/include/gtest/*.h \
