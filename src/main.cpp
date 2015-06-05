@@ -300,11 +300,6 @@ int init_options(int argc, char**argv, struct options& options)
       LOG_INFO("SAS compression disabled");
       break;
 
-    case OPT_SAS_COMPRESSION_ENABLED:
-      SAS::compression_enabled = true;
-      LOG_INFO("SAS compression enabled");
-      break;
-
     case DNS_SERVER:
       LOG_INFO("DNS server set to %s", optarg);
       options.dns_server = std::string(optarg);
