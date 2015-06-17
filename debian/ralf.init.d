@@ -97,6 +97,7 @@ get_settings()
         sas_server=0.0.0.0
         signaling_dns_server=127.0.0.1
         num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
+	sas_compression_disabled=Y
         . /etc/clearwater/config
       
         # Set up a default cluster_settings file if it does not exist.
