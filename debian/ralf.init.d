@@ -141,6 +141,8 @@ get_daemon_args()
         then
           alarms_enabled_arg="--alarms-enabled"
         fi
+
+        [ "$sas_compression_enabled" != "Y" ] || sas_compression_enabled_arg="--sas-compression-enabled"
       
         [ -z "$target_latency_us" ] || target_latency_us_arg="--target-latency-us=$target_latency_us"
         [ -z "$max_tokens" ] || max_tokens_arg="--max-tokens=$max_tokens"
@@ -165,7 +167,9 @@ get_daemon_args()
                      $init_token_rate_arg
                      $min_token_rate_arg
                      $exception_max_ttl_arg
-                     --sas=$sas_server,$NAME@$public_hostname"
+                   --sas=$sas_server,$NAME@$public_hostname
+                     $sas_compression_enabled_arg"
+
 
         [ "$http_blacklist_duration" = "" ]     || DAEMON_ARGS="$DAEMON_ARGS --http-blacklist-duration=$http_blacklist_duration"
         [ "$diameter_blacklist_duration" = "" ] || DAEMON_ARGS="$DAEMON_ARGS --diameter-blacklist-duration=$diameter_blacklist_duration"
