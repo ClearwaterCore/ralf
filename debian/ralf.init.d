@@ -98,6 +98,13 @@ get_settings()
         signaling_dns_server=127.0.0.1
         num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
         . /etc/clearwater/config
+
+	# Log the output of clearwater-show-config to syslog
+	(
+	    clearwater-show-config > /tmp/$$ 2>&1
+	    logger -t "clearwater-show-config" -f /tmp/$$ -p local6.info
+	    rm -f /tmp/$$
+	)
       
         # Set up a default cluster_settings file if it does not exist.
         [ -f /etc/clearwater/cluster_settings ] || echo "servers=$local_ip:11211" > /etc/clearwater/cluster_settings
