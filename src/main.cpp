@@ -75,7 +75,8 @@ enum OptionTypes
   EXCEPTION_MAX_TTL,
   BILLING_PEER,
   HTTP_BLACKLIST_DURATION,
-  DIAMETER_BLACKLIST_DURATION
+  DIAMETER_BLACKLIST_DURATION,
+  OPT_SAS_COMPRESSION_ENABLED
 };
 
 enum struct MemcachedWriteFormat
@@ -134,6 +135,7 @@ const static struct option long_opt[] =
   {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
   {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
+  { "sas-compression-enabled",    no_argument,       NULL, OPT_SAS_COMPRESSION_ENABLED},
   {NULL,                          0,                 NULL, 0},
 };
 
@@ -286,6 +288,11 @@ int init_options(int argc, char**argv, struct options& options)
       options.access_log_directory = std::string(optarg);
       break;
 
+      break;
+
+    case OPT_SAS_COMPRESSION_ENABLED:
+      SAS::compression_enabled = true;
+      TRC_INFO("SAS compression enabled");
     case DNS_SERVER:
       TRC_INFO("DNS server set to %s", optarg);
       options.dns_server = std::string(optarg);

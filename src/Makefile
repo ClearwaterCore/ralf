@@ -131,7 +131,8 @@ LDFLAGS += -lzmq \
            -lc \
            -lboost_system \
            -lboost_filesystem \
-           $(shell net-snmp-config --netsnmp-agent-libs)
+           $(shell net-snmp-config --netsnmp-agent-libs) \
+	   -lz
 
 
 # Test build uses just-built libraries, which may not be installed
