@@ -99,23 +99,23 @@ get_settings()
         num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
         . /etc/clearwater/config
 
-	# Log the output of clearwater-show-config to syslog
-	(
-	    clearwater-show-config > /tmp/$$ 2>&1
-	    logger -t "clearwater-show-config" -f /tmp/$$ -p local6.info
-	    rm -f /tmp/$$
-	)
-      
+        # Log the output of clearwater-show-config to syslog
+        (
+            clearwater-show-config > /tmp/$$ 2>&1
+            logger -t "clearwater-show-config" -f /tmp/$$ -p local7.info
+            rm -f /tmp/$$
+        )
+
         # Set up a default cluster_settings file if it does not exist.
         [ -f /etc/clearwater/cluster_settings ] || echo "servers=$local_ip:11211" > /etc/clearwater/cluster_settings
-      
+
         # If the remote cluster settings file exists then start sprout with geo-redundancy enabled
         [ -f /etc/clearwater/remote_cluster_settings ] && remote_memstore_arg="--remote-memstore=/etc/clearwater/remote_cluster_settings"
-      
+
         # Set up defaults for user settings then pull in any overrides.
         log_level=2
         [ -r /etc/clearwater/user_settings ] && . /etc/clearwater/user_settings
-      
+
         # Work out which features are enabled.
         if [ -d /etc/clearwater/features.d ]
         then
@@ -133,7 +133,7 @@ get_daemon_args()
 {
         # Get the settings
         get_settings
-      
+
         # Set the destination realm correctly
         if [ ! -z $billing_realm ]
         then
@@ -142,7 +142,7 @@ get_daemon_args()
         then
           billing_realm_arg="--billing-realm=$home_domain"
         fi
-      
+
         # Enable SNMP alarms if informsink(s) are configured
         if [ ! -z "$snmp_ip" ]
         then
@@ -150,7 +150,7 @@ get_daemon_args()
         fi
 
         [ "$sas_compression_enabled" != "Y" ] || sas_compression_enabled_arg="--sas-compression-enabled"
-      
+
         [ -z "$target_latency_us" ] || target_latency_us_arg="--target-latency-us=$target_latency_us"
         [ -z "$max_tokens" ] || max_tokens_arg="--max-tokens=$max_tokens"
         [ -z "$init_token_rate" ] || init_token_rate_arg="--init-token-rate=$init_token_rate"
