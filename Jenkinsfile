@@ -1,4 +1,6 @@
 node {
+  git url: 'git@github.com:Metaswitch/ralf.git'
+
   stage 'Check location'
   sh 'pwd'
   sh 'ls'
