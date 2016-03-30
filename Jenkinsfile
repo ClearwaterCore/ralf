@@ -1,4 +1,8 @@
 node {
+  stage 'Check location'
+  sh 'pwd'
+  sh 'ls'
+
   stage 'Check git status'
   sh 'git status'
 
