@@ -1,5 +1,5 @@
 node {
-  git url: 'git@github.com:Metaswitch/ralf.git'
+  git url: 'git@github.com:Metaswitch/ralf.git', branch: 'rkd-experimental-jenkins-2.0'
 
   stage 'Check location'
   sh 'pwd'
