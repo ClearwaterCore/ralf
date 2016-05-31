@@ -16,7 +16,7 @@ DEB_NAMES := ralf ralf-dbg ralf-libs ralf-libs-dbg
 INCLUDE_DIR := ${INSTALL_DIR}/include
 LIB_DIR := ${INSTALL_DIR}/lib
 
-SUBMODULES := c-ares libevhtp libmemcached freeDiameter sas-client jsoncpp
+SUBMODULES := c-ares libevhtp libmemcached freeDiameter sas-client
 
 include $(patsubst %, ${MK_DIR}/%.mk, ${SUBMODULES})
 include ${MK_DIR}/ralf.mk
@@ -25,7 +25,9 @@ build: ${SUBMODULES} ralf
 
 test: ${SUBMODULES} ralf_test
 
-testall: $(patsubst %, %_test, ${SUBMODULES}) test
+full_test: ${SUBMODULES} ralf_full_test
+
+testall: $(patsubst %, %_test, ${SUBMODULES}) full_test
 
 clean: $(patsubst %, %_clean, ${SUBMODULES}) ralf_clean
 	rm -rf ${ROOT}/usr

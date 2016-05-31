@@ -61,11 +61,12 @@
 #include "realmmanager.h"
 #include "communicationmonitor.h"
 #include "exception_handler.h"
+#include "ralf_alarmdefinition.h"
+#include "namespace_hop.h"
 
 enum OptionTypes
 {
-  ALARMS_ENABLED=256+1,
-  DNS_SERVER,
+  DNS_SERVER=256+1,
   MEMCACHED_WRITE_FORMAT,
   TARGET_LATENCY_US,
   MAX_TOKENS,
@@ -74,7 +75,9 @@ enum OptionTypes
   EXCEPTION_MAX_TTL,
   BILLING_PEER,
   HTTP_BLACKLIST_DURATION,
-  DIAMETER_BLACKLIST_DURATION
+  DIAMETER_BLACKLIST_DURATION,
+  PIDFILE,
+  DAEMON,
 };
 
 enum struct MemcachedWriteFormat
@@ -100,7 +103,6 @@ struct options
   int log_level;
   std::string sas_server;
   std::string sas_system_name;
-  bool alarms_enabled;
   MemcachedWriteFormat memcached_write_format;
   int target_latency_us;
   int max_tokens;
@@ -109,6 +111,8 @@ struct options
   int exception_max_ttl;
   int http_blacklist_duration;
   int diameter_blacklist_duration;
+  std::string pidfile;
+  bool daemon;
 };
 
 const static struct option long_opt[] =
@@ -125,7 +129,6 @@ const static struct option long_opt[] =
   {"log-file",                    required_argument, NULL, 'F'},
   {"log-level",                   required_argument, NULL, 'L'},
   {"sas",                         required_argument, NULL, 's'},
-  {"alarms-enabled",              no_argument,       NULL, ALARMS_ENABLED},
   {"help",                        no_argument,       NULL, 'h'},
   {"memcached-write-format",      required_argument, 0,    MEMCACHED_WRITE_FORMAT},
   {"target-latency-us",           required_argument, NULL, TARGET_LATENCY_US},
@@ -135,6 +138,8 @@ const static struct option long_opt[] =
   {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
   {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
+  {"pidfile",                     required_argument, NULL, PIDFILE},
+  {"daemon",                      no_argument,       NULL, DAEMON},
   {NULL,                          0,                 NULL, 0},
 };
 
@@ -163,7 +168,6 @@ void usage(void)
        "                            Use specified host as Service Assurance Server and specified\n"
        "                            system name to identify this system to SAS. If this option isn't\n"
        "                            specified, SAS is disabled\n"
-       "     --alarms-enabled       Whether SNMP alarms are enabled (default: false)\n"
        "     --memcached-write-format\n"
        "                            The data format to use when writing sessions\n"
        "                            to memcached. Values are 'binary' and 'json'\n"
@@ -171,7 +175,7 @@ void usage(void)
        "     --target-latency-us <usecs>\n"
        "                            Target latency above which throttling applies (default: 100000)\n"
        "     --max-tokens N         Maximum number of tokens allowed in the token bucket (used by\n"
-       "                            the throttling code (default: 20))\n"
+       "                            the throttling code (default: 1000))\n"
        "     --init-token-rate N    Initial token refill rate of tokens in the token bucket (used by\n"
        "                            the throttling code (default: 100.0))\n"
        "     --min-token-rate N     Minimum token refill rate of tokens in the token bucket (used by\n"
@@ -183,6 +187,8 @@ void usage(void)
        "                            The amount of time to blacklist an HTTP peer when it is unresponsive.\n"
        "     --diameter-blacklist-duration <secs>\n"
        "                            The amount of time to blacklist a Diameter peer when it is unresponsive.\n"
+       "     --pidfile=<filename>   Write pidfile\n"
+       "     --daemon               Run as a daemon\n"
        " -h, --help                 Show this help screen\n"
       );
 }
@@ -226,17 +232,17 @@ int init_options(int argc, char**argv, struct options& options)
     switch (opt)
     {
     case 'l':
-      LOG_INFO("Local host: %s", optarg);
+      TRC_INFO("Local host: %s", optarg);
       options.local_host = std::string(optarg);
       break;
 
     case 'c':
-      LOG_INFO("Diameter configuration file: %s", optarg);
+      TRC_INFO("Diameter configuration file: %s", optarg);
       options.diameter_conf = std::string(optarg);
       break;
 
     case 'H':
-      LOG_INFO("HTTP address: %s", optarg);
+      TRC_INFO("HTTP address: %s", optarg);
       options.http_address = std::string(optarg);
       // TODO: Parse optional HTTP port.
       break;
@@ -251,50 +257,40 @@ int init_options(int argc, char**argv, struct options& options)
       {
         options.sas_server = sas_options[0];
         options.sas_system_name = sas_options[1];
-        LOG_INFO("SAS set to %s\n", options.sas_server.c_str());
-        LOG_INFO("System name is set to %s\n", options.sas_system_name.c_str());
-      }
-      else
-      {
-        CL_RALF_INVALID_SAS_OPTION.log();
-        LOG_WARNING("Invalid --sas option, SAS disabled\n");
+        TRC_INFO("SAS set to %s\n", options.sas_server.c_str());
+        TRC_INFO("System name is set to %s\n", options.sas_system_name.c_str());
       }
     }
     break;
 
     case 't':
-      LOG_INFO("HTTP threads: %s", optarg);
+      TRC_INFO("HTTP threads: %s", optarg);
       options.http_threads = atoi(optarg);
       break;
 
     case 'b':
-      LOG_INFO("Billing realm: %s", optarg);
+      TRC_INFO("Billing realm: %s", optarg);
       options.billing_realm = std::string(optarg);
       break;
 
     case BILLING_PEER:
-      LOG_INFO("Fallback Diameter peer to connect to: %s", optarg);
+      TRC_INFO("Fallback Diameter peer to connect to: %s", optarg);
       options.billing_peer = std::string(optarg);
       break;
 
     case 'p':
-      LOG_INFO("Maximum peers: %s", optarg);
+      TRC_INFO("Maximum peers: %s", optarg);
       options.max_peers = atoi(optarg);
       break;
 
     case 'a':
-      LOG_INFO("Access log: %s", optarg);
+      TRC_INFO("Access log: %s", optarg);
       options.access_log_enabled = true;
       options.access_log_directory = std::string(optarg);
       break;
 
-    case ALARMS_ENABLED:
-      LOG_INFO("SNMP alarms are enabled");
-      options.alarms_enabled = true;
-      break;
-
     case DNS_SERVER:
-      LOG_INFO("DNS server set to %s", optarg);
+      TRC_INFO("DNS server set to %s", optarg);
       options.dns_server = std::string(optarg);
       break;
 
@@ -310,17 +306,17 @@ int init_options(int argc, char**argv, struct options& options)
     case MEMCACHED_WRITE_FORMAT:
       if (strcmp(optarg, "binary") == 0)
       {
-        LOG_INFO("Memcached write format set to 'binary'");
+        TRC_INFO("Memcached write format set to 'binary'");
         options.memcached_write_format = MemcachedWriteFormat::BINARY;
       }
       else if (strcmp(optarg, "json") == 0)
       {
-        LOG_INFO("Memcached write format set to 'json'");
+        TRC_INFO("Memcached write format set to 'json'");
         options.memcached_write_format = MemcachedWriteFormat::JSON;
       }
       else
       {
-        LOG_WARNING("Invalid value for memcached-write-format, using '%s'."
+        TRC_WARNING("Invalid value for memcached-write-format, using '%s'."
                     "Got '%s', valid values are 'json' and 'binary'",
                     ((options.memcached_write_format == MemcachedWriteFormat::JSON) ?
                      "json" : "binary"),
@@ -332,7 +328,7 @@ int init_options(int argc, char**argv, struct options& options)
       options.target_latency_us = atoi(optarg);
       if (options.target_latency_us <= 0)
       {
-        LOG_ERROR("Invalid --target-latency-us option %s", optarg);
+        TRC_ERROR("Invalid --target-latency-us option %s", optarg);
         return -1;
       }
       break;
@@ -341,7 +337,7 @@ int init_options(int argc, char**argv, struct options& options)
       options.max_tokens = atoi(optarg);
       if (options.max_tokens <= 0)
       {
-        LOG_ERROR("Invalid --max-tokens option %s", optarg);
+        TRC_ERROR("Invalid --max-tokens option %s", optarg);
         return -1;
       }
       break;
@@ -350,7 +346,7 @@ int init_options(int argc, char**argv, struct options& options)
       options.init_token_rate = atoi(optarg);
       if (options.init_token_rate <= 0)
       {
-        LOG_ERROR("Invalid --init-token-rate option %s", optarg);
+        TRC_ERROR("Invalid --init-token-rate option %s", optarg);
         return -1;
       }
       break;
@@ -359,32 +355,40 @@ int init_options(int argc, char**argv, struct options& options)
       options.min_token_rate = atoi(optarg);
       if (options.min_token_rate <= 0)
       {
-        LOG_ERROR("Invalid --min-token-rate option %s", optarg);
+        TRC_ERROR("Invalid --min-token-rate option %s", optarg);
         return -1;
       }
       break;
 
     case EXCEPTION_MAX_TTL:
       options.exception_max_ttl = atoi(optarg);
-      LOG_INFO("Max TTL after an exception set to %d",
+      TRC_INFO("Max TTL after an exception set to %d",
                options.exception_max_ttl);
       break;
 
     case HTTP_BLACKLIST_DURATION:
       options.http_blacklist_duration = atoi(optarg);
-      LOG_INFO("HTTP blacklist duration set to %d",
+      TRC_INFO("HTTP blacklist duration set to %d",
                options.http_blacklist_duration);
       break;
 
     case DIAMETER_BLACKLIST_DURATION:
       options.diameter_blacklist_duration = atoi(optarg);
-      LOG_INFO("Diameter blacklist duration set to %d",
+      TRC_INFO("Diameter blacklist duration set to %d",
                options.diameter_blacklist_duration);
+      break;
+
+    case PIDFILE:
+      options.pidfile = std::string(optarg);
+      break;
+
+    case DAEMON:
+      options.daemon = true;
       break;
 
     default:
       CL_RALF_INVALID_OPTION_C.log();
-      LOG_ERROR("Unknown option: %d.  Run with --help for options.\n", opt);
+      TRC_ERROR("Unknown option: %d.  Run with --help for options.\n", opt);
       return -1;
     }
   }
@@ -409,17 +413,16 @@ void signal_handler(int sig)
   signal(SIGSEGV, signal_handler);
 
   // Log the signal, along with a backtrace.
-  LOG_BACKTRACE("Signal %d caught", sig);
+  TRC_BACKTRACE("Signal %d caught", sig);
 
   // Ensure the log files are complete - the core file created by abort() below
   // will trigger the log files to be copied to the diags bundle
-  LOG_COMMIT();
+  TRC_COMMIT();
 
   // Check if there's a stored jmp_buf on the thread and handle if there is
   exception_handler->handle_exception();
 
   CL_RALF_CRASHED.log(strsignal(sig));
-  closelog();
 
   // Dump a core.
   abort();
@@ -427,11 +430,6 @@ void signal_handler(int sig)
 
 int main(int argc, char**argv)
 {
-  CommunicationMonitor* cdf_comm_monitor = NULL;
-  CommunicationMonitor* chronos_comm_monitor = NULL;
-  CommunicationMonitor* memcached_comm_monitor = NULL;
-  Alarm* vbucket_alarm = NULL;
-
   // Set up our exception signal handler for asserts and segfaults.
   signal(SIGABRT, signal_handler);
   signal(SIGSEGV, signal_handler);
@@ -454,24 +452,24 @@ int main(int argc, char**argv)
   options.log_level = 0;
   options.sas_server = "0.0.0.0";
   options.sas_system_name = "";
-  options.alarms_enabled = false;
   options.memcached_write_format = MemcachedWriteFormat::JSON;
   options.target_latency_us = 100000;
-  options.max_tokens = 20;
+  options.max_tokens = 1000;
   options.init_token_rate = 100.0;
   options.min_token_rate = 10.0;
   options.exception_max_ttl = 600;
+  options.http_blacklist_duration = HttpResolver::DEFAULT_BLACKLIST_DURATION;
+  options.diameter_blacklist_duration = DiameterResolver::DEFAULT_BLACKLIST_DURATION;
+  options.pidfile = "";
+  options.daemon = false;
 
-  boost::filesystem::path p = argv[0];
-  // Copy the filename to a string so that we can be sure of its lifespan -
-  // the value passed to openlog must be valid for the duration of the program.
-  std::string filename = p.filename().c_str();
-  openlog(filename.c_str(), PDLOG_PID, PDLOG_LOCAL6);
+  // Initialise ENT logging before making "Started" log
+  PDLogStatic::init(argv[0]);
+
   CL_RALF_STARTED.log();
 
   if (init_logging_options(argc, argv, options) != 0)
   {
-    closelog();
     return 1;
   }
 
@@ -488,7 +486,7 @@ int main(int argc, char**argv)
     Log::setLogger(new Logger(options.log_directory, prog_name));
   }
 
-  LOG_STATUS("Log level set to %d", options.log_level);
+  TRC_STATUS("Log level set to %d", options.log_level);
 
   std::stringstream options_ss;
   for (int ii = 0; ii < argc; ii++)
@@ -498,13 +496,68 @@ int main(int argc, char**argv)
   }
   std::string options_str = "Command-line options were: " + options_ss.str();
 
-  LOG_INFO(options_str.c_str());
+  TRC_INFO(options_str.c_str());
 
   if (init_options(argc, argv, options) != 0)
   {
-    closelog();
     return 1;
   }
+
+  if (options.daemon)
+  {
+    // Options parsed and validated, time to demonize before writing out our
+    // pidfile or spwaning threads.
+    int errnum = Utils::daemonize();
+    if (errnum != 0)
+    {
+      TRC_ERROR("Failed to convert to daemon, %d (%s)", errnum, strerror(errnum));
+      exit(0);
+    }
+  }
+
+  if (options.pidfile != "")
+  {
+    int rc = Utils::lock_and_write_pidfile(options.pidfile);
+    if (rc == -1)
+    {
+      // Failure to acquire pidfile lock
+      TRC_ERROR("Could not write pidfile - exiting");
+      return 2;
+    }
+  }
+
+  start_signal_handlers();
+
+  if (options.sas_server == "0.0.0.0")
+  {
+    TRC_WARNING("SAS server option was invalid or not configured - SAS is disabled");
+    CL_RALF_INVALID_SAS_OPTION.log();
+  }
+
+  // Create Ralf's alarm objects. Note that the alarm identifier strings must match those
+  // in the alarm definition JSON file exactly.
+  CommunicationMonitor* cdf_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+                                                                              AlarmDef::RALF_CDF_COMM_ERROR,
+                                                                              AlarmDef::CRITICAL),
+                                                                    "Ralf",
+                                                                    "CDF");
+
+  CommunicationMonitor* chronos_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+                                                                                  AlarmDef::RALF_CHRONOS_COMM_ERROR,
+                                                                                  AlarmDef::CRITICAL),
+                                                                        "Ralf",
+                                                                        "Chronos");
+
+  CommunicationMonitor* memcached_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+                                                                                    AlarmDef::RALF_MEMCACHED_COMM_ERROR,
+                                                                                    AlarmDef::CRITICAL),
+                                                                          "Ralf",
+                                                                          "Memcached");
+
+  Alarm* vbucket_alarm = new Alarm("ralf", AlarmDef::RALF_VBUCKET_ERROR, AlarmDef::MAJOR);
+
+  // Start the alarm request agent
+  AlarmReqAgent::get_instance().start();
 
   MemcachedStore* mstore = new MemcachedStore(true,
                                               "./cluster_settings",
@@ -513,7 +566,7 @@ int main(int argc, char**argv)
 
   if (!(mstore->has_servers()))
   {
-    LOG_ERROR("./cluster_settings file does not contain a valid set of servers");
+    TRC_ERROR("./cluster_settings file does not contain a valid set of servers");
     return 1;
   };
 
@@ -527,29 +580,8 @@ int main(int argc, char**argv)
             "ralf",
             SASEvent::CURRENT_RESOURCE_BUNDLE,
             options.sas_server,
-            sas_write);
-
-  if (options.alarms_enabled)
-  {
-    // Create Ralf's alarm objects. Note that the alarm identifier strings must match those
-    // in the alarm definition JSON file exactly.
-
-    cdf_comm_monitor = new CommunicationMonitor(new Alarm("ralf", AlarmDef::RALF_CDF_COMM_ERROR,
-                                                                  AlarmDef::CRITICAL));
-
-    chronos_comm_monitor = new CommunicationMonitor(new Alarm("ralf", AlarmDef::RALF_CHRONOS_COMM_ERROR,
-                                                                      AlarmDef::CRITICAL));
-
-    memcached_comm_monitor = new CommunicationMonitor(new Alarm("ralf", AlarmDef::RALF_MEMCACHED_COMM_ERROR,
-                                                                        AlarmDef::CRITICAL));
-
-    vbucket_alarm = new Alarm("ralf", AlarmDef::RALF_VBUCKET_ERROR,
-                                      AlarmDef::MAJOR);
-
-    // Start the alarm request agent
-    AlarmReqAgent::get_instance().start();
-    AlarmState::clear_all("ralf");
-  }
+            sas_write,
+            create_connection_in_management_namespace);
 
   LoadMonitor* load_monitor = new LoadMonitor(options.target_latency_us,
                                               options.max_tokens,
@@ -557,11 +589,7 @@ int main(int argc, char**argv)
                                               options.min_token_rate);
 
   HealthChecker* hc = new HealthChecker();
-  pthread_t health_check_thread;
-  pthread_create(&health_check_thread,
-                 NULL,
-                 &HealthChecker::static_main_thread_function,
-                 (void*)hc);
+  hc->start_thread();
 
   // Create an exception handler. The exception handler doesn't need
   // to quiesce the process before killing it.
@@ -586,8 +614,7 @@ int main(int argc, char**argv)
   catch (Diameter::Stack::Exception& e)
   {
     CL_RALF_DIAMETER_INIT_FAIL.log(e._func, e._rc);
-    closelog();
-    LOG_ERROR("Failed to initialize Diameter stack - function %s, rc %d", e._func, e._rc);
+    TRC_ERROR("Failed to initialize Diameter stack - function %s, rc %d", e._func, e._rc);
     exit(2);
   }
 
@@ -628,13 +655,13 @@ int main(int argc, char**argv)
   }
 
   // Create a connection to Chronos.  This requires an HttpResolver.
-  LOG_STATUS("Creating connection to Chronos at %s using %s as the callback URI", local_chronos.c_str(), chronos_callback_addr.c_str());
+  TRC_STATUS("Creating connection to Chronos at %s using %s as the callback URI", local_chronos.c_str(), chronos_callback_addr.c_str());
   HttpResolver* http_resolver = new HttpResolver(dns_resolver,
                                                  http_af,
                                                  options.http_blacklist_duration);
   ChronosConnection* timer_conn = new ChronosConnection(local_chronos, chronos_callback_addr, http_resolver, chronos_comm_monitor);
 
-  cfg->mgr = new SessionManager(store, dict, factory, timer_conn, diameter_stack, hc);
+  cfg->mgr = new SessionManager(store, {}, dict, factory, timer_conn, diameter_stack, hc);
 
   HttpStack* http_stack = HttpStack::get_instance();
   HttpStackUtils::PingHandler ping_handler;
@@ -648,7 +675,7 @@ int main(int argc, char**argv)
                           exception_handler,
                           access_logger,
                           load_monitor);
-    http_stack->register_handler("^/ping$", & ping_handler);
+    http_stack->register_handler("^/ping$", &ping_handler);
     http_stack->register_handler("^/call-id/[^/]*$", &billing_handler);
     http_stack->start();
   }
@@ -663,7 +690,7 @@ int main(int argc, char**argv)
   struct in6_addr dummy_addr;
   if (inet_pton(AF_INET6, options.local_host.c_str(), &dummy_addr) == 1)
   {
-    LOG_DEBUG("Local host is an IPv6 address");
+    TRC_DEBUG("Local host is an IPv6 address");
     diameter_af = AF_INET6;
   }
 
@@ -691,6 +718,17 @@ int main(int argc, char**argv)
     fprintf(stderr, "Caught HttpStack::Exception - %s - %d\n", e._func, e._rc);
   }
 
+  try
+  {
+    diameter_stack->stop();
+    diameter_stack->wait_stopped();
+  }
+  catch (Diameter::Stack::Exception& e)
+  {
+    CL_RALF_DIAMETER_STOP_FAIL.log(e._func, e._rc);
+    TRC_ERROR("Failed to stop Diameter stack - function %s, rc %d", e._func, e._rc);
+  }
+
   realm_manager->stop();
 
   delete realm_manager; realm_manager = NULL;
@@ -699,24 +737,19 @@ int main(int argc, char**argv)
   delete dns_resolver; dns_resolver = NULL;
   delete load_monitor; load_monitor = NULL;
 
-  hc->terminate();
-  pthread_join(health_check_thread, NULL);
+  hc->stop_thread();
   delete exception_handler; exception_handler = NULL;
   delete hc; hc = NULL;
 
-  if (options.alarms_enabled)
-  {
-    // Stop the alarm request agent
-    AlarmReqAgent::get_instance().stop();
+  // Stop the alarm request agent
+  AlarmReqAgent::get_instance().stop();
 
-    // Delete Ralf's alarm objects
-    delete cdf_comm_monitor;
-    delete chronos_comm_monitor;
-    delete memcached_comm_monitor;
-    delete vbucket_alarm;
-  }
+  // Delete Ralf's alarm objects
+  delete cdf_comm_monitor;
+  delete chronos_comm_monitor;
+  delete memcached_comm_monitor;
+  delete vbucket_alarm;
 
-  closelog();
   signal(SIGTERM, SIG_DFL);
   sem_destroy(&term_sem);
 }

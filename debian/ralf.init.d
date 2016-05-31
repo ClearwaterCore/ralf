@@ -56,7 +56,7 @@ PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DESC="Clearwater CTF"
 NAME=ralf
 EXECNAME=ralf
-PIDFILE=/var/run/$NAME.pid
+PIDFILE=/var/run/$NAME/$NAME.pid
 DAEMON=/usr/share/clearwater/bin/ralf
 HOME=/etc/clearwater
 log_directory=/var/log/$NAME
@@ -97,18 +97,15 @@ get_settings()
         sas_server=0.0.0.0
         signaling_dns_server=127.0.0.1
         num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
+        log_level=2
         . /etc/clearwater/config
-      
+
         # Set up a default cluster_settings file if it does not exist.
         [ -f /etc/clearwater/cluster_settings ] || echo "servers=$local_ip:11211" > /etc/clearwater/cluster_settings
-      
+
         # If the remote cluster settings file exists then start sprout with geo-redundancy enabled
         [ -f /etc/clearwater/remote_cluster_settings ] && remote_memstore_arg="--remote-memstore=/etc/clearwater/remote_cluster_settings"
-      
-        # Set up defaults for user settings then pull in any overrides.
-        log_level=2
-        [ -r /etc/clearwater/user_settings ] && . /etc/clearwater/user_settings
-      
+
         # Work out which features are enabled.
         if [ -d /etc/clearwater/features.d ]
         then
@@ -126,7 +123,7 @@ get_daemon_args()
 {
         # Get the settings
         get_settings
-      
+
         # Set the destination realm correctly
         if [ ! -z $billing_realm ]
         then
@@ -135,13 +132,7 @@ get_daemon_args()
         then
           billing_realm_arg="--billing-realm=$home_domain"
         fi
-      
-        # Enable SNMP alarms if informsink(s) are configured
-        if [ ! -z "$snmp_ip" ]
-        then
-          alarms_enabled_arg="--alarms-enabled"
-        fi
-      
+
         [ -z "$target_latency_us" ] || target_latency_us_arg="--target-latency-us=$target_latency_us"
         [ -z "$max_tokens" ] || max_tokens_arg="--max-tokens=$max_tokens"
         [ -z "$init_token_rate" ] || init_token_rate_arg="--init-token-rate=$init_token_rate"
@@ -159,7 +150,6 @@ get_daemon_args()
                      --log-level=$log_level
                      $billing_realm_arg
                      $billing_peer_arg
-                     $alarms_enabled_arg
                      $target_latency_us_arg
                      $max_tokens_arg
                      $init_token_rate_arg
@@ -180,13 +170,17 @@ do_start()
         #   0 if daemon has been started
         #   1 if daemon was already running
         #   2 if daemon could not be started
+
+        # Allow us to write to the pidfile directory
+        install -m 755 -o $NAME -g root -d /var/run/$NAME && chown -R $NAME /var/run/$NAME
+
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
                 || return 1
 
         # daemon is not running, so attempt to start it.
         setup_environment
         get_daemon_args
-        $namespace_prefix start-stop-daemon --start --quiet --background --make-pidfile --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS \
+        $namespace_prefix start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS --daemon --pidfile=$PIDFILE \
                 || return 2
         # Add code here, if necessary, that waits for the process to be ready
         # to handle requests from services started subsequently which depend
@@ -205,17 +199,6 @@ do_stop()
         #   other if a failure occurred
         start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --pidfile $PIDFILE --name $EXECNAME
         RETVAL="$?"
-        [ "$RETVAL" = 2 ] && return 2
-        # Wait for children to finish too if this is a daemon that forks
-        # and if the daemon is only ever run from this initscript.
-        # If the above conditions are not satisfied then add some other code
-        # that waits for the process to drop all resources that could be
-        # needed by services started subsequently.  A last resort is to
-        # sleep for some time.
-        #start-stop-daemon --stop --quiet --oknodo --retry=0/30/KILL/5 --exec $DAEMON
-        [ "$?" = 2 ] && return 2
-        # Many daemons don't delete their pidfiles when they exit.
-        rm -f $PIDFILE
         return "$RETVAL"
 }
 
@@ -224,6 +207,9 @@ do_stop()
 #
 do_run()
 {
+        # Allow us to write to the pidfile directory
+        install -m 755 -o $NAME -g root -d /var/run/$NAME && chown -R $NAME /var/run/$NAME
+
         setup_environment
         get_daemon_args
         $namespace_prefix start-stop-daemon --start --quiet --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS \
@@ -245,9 +231,6 @@ do_abort()
         #   other if a failure occurred
         start-stop-daemon --stop --quiet --retry=ABRT/60/KILL/5 --pidfile $PIDFILE --name $EXECNAME
         RETVAL="$?"
-        [ "$RETVAL" = 2 ] && return 2
-        # Many daemons don't delete their pidfiles when they exit.
-        rm -f $PIDFILE
         return "$RETVAL"
 }
 

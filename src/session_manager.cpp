@@ -1,5 +1,5 @@
 /**
- * @file sessionmanager.cpp Ralf session manager.
+ * @file session_manager.cpp Ralf session manager.
  *
  * Project Clearwater - IMS in the Cloud
  * Copyright (C) 2013  Metaswitch Networks Ltd
@@ -39,7 +39,7 @@
 
 #include "utils.h"
 #include "message.hpp"
-#include "sessionstore.h"
+#include "session_store.h"
 #include "session_manager.hpp"
 #include "log.h"
 #include "peer_message_sender.hpp"
@@ -57,45 +57,135 @@ void SessionManager::handle(Message* msg)
 {
   SessionStore::Session* sess = NULL;
 
+  // This flag is used to add a session from a store in one site to another
+  // site that for some reason has lost it. When it's set the SessionStore will
+  // add the session to the store with a CAS of 0.
+  bool new_session = false;
+
   if (msg->record_type.isInterim() || msg->record_type.isStop())
   {
     // This relates to an existing session
-    sess = _store->get_session_data(msg->call_id,
-                                    msg->role,
-                                    msg->function,
-                                    msg->trail);
+    sess = _local_store->get_session_data(msg->call_id,
+                                          msg->role,
+                                          msg->function,
+                                          msg->trail);
 
     if (sess == NULL)
     {
-      // No record of the session - ignore the request
-      LOG_INFO("Session for %s not found in database, ignoring message", msg->call_id.c_str());
-      delete msg; msg = NULL;
-      return;
+      // Try the remote stores.
+      TRC_DEBUG("Session for %s not found in local store, trying remote stores",
+                msg->call_id.c_str());
+      new_session = true;
+      std::vector<SessionStore*>::iterator it = _remote_stores.begin();
+
+      while ((it != _remote_stores.end()) && (sess == NULL))
+      {
+        sess = (*it)->get_session_data(msg->call_id,
+                                       msg->role,
+                                       msg->function,
+                                       msg->trail);
+        ++it;
+      }
+
+      if (sess == NULL)
+      {
+        // No record of the session - ignore the request
+        TRC_INFO("Session for %s not found in database, ignoring message", msg->call_id.c_str());
+        delete msg; msg = NULL;
+        return;
+      }
     }
+
+    // Increment the accounting record number before building new ACR.
+    sess->acct_record_number += 1;
 
     if (msg->record_type.isInterim())
     {
-      sess->acct_record_number += 1;
-      // Update the store with the incremented accounting record number
-      bool success = _store->set_session_data(msg->call_id,
-                                              msg->role,
-                                              msg->function,
-                                              sess,
-                                              msg->trail);
-      if (!success)
+      // Update the store with the incremented accounting record number.
+      Store::Status rc = _local_store->set_session_data(msg->call_id,
+                                                        msg->role,
+                                                        msg->function,
+                                                        sess,
+                                                        new_session,
+                                                        msg->trail);
+      if (rc == Store::Status::DATA_CONTENTION)
       {
         // Someone has written conflicting data since we read this, so start processing this message again
         return this->handle(msg);  // LCOV_EXCL_LINE - no conflicts in UT
+      }
+
+      std::vector<SessionStore*>::iterator remote_store = _remote_stores.begin();
+
+      while (remote_store != _remote_stores.end())
+      {
+        new_session = false;
+
+        SessionStore::Session* remote_sess = (*remote_store)->get_session_data(msg->call_id,
+                                                                               msg->role,
+                                                                               msg->function,
+                                                                               msg->trail);
+        if (remote_sess == NULL)
+        {
+          remote_sess = new SessionStore::Session();
+          *remote_sess = *sess;
+          new_session = true;
+        }
+        else
+        {
+          remote_sess->acct_record_number += 1;
+        }
+
+        rc = (*remote_store)->set_session_data(msg->call_id,
+                                               msg->role,
+                                               msg->function,
+                                               remote_sess,
+                                               new_session,
+                                               msg->trail);
+        delete remote_sess; remote_sess = NULL;
+
+        // Move onto the next store unless we've got data contention, in which
+        // case we want to try this store. If a remote site is uncontactable we
+        // ignore it.
+        if (rc != Store::Status::DATA_CONTENTION)
+        {
+          ++remote_store;
+        }
       }
     }
     else if  (msg->record_type.isStop())
     {
       // Delete the session from the store and cancel the timer
-      _store->delete_session_data(msg->call_id,
-                                  msg->role,
-                                  msg->function,
-                                  msg->trail);
-      LOG_INFO("Received STOP for session %s, deleting session and timer using timer ID %s", msg->call_id.c_str(), sess->timer_id.c_str());
+      Store::Status rc =_local_store->delete_session_data(msg->call_id,
+                                                          msg->role,
+                                                          msg->function,
+                                                          sess,
+                                                          msg->trail);
+
+      if (rc == Store::Status::DATA_CONTENTION)
+      {
+        // Someone has written conflicting data since we read this, so start processing this message again
+        return this->handle(msg);  // LCOV_EXCL_LINE - no conflicts in UT
+      }
+
+      std::vector<SessionStore*>::iterator remote_store = _remote_stores.begin();
+
+      while (remote_store != _remote_stores.end())
+      {
+        rc = (*remote_store)->delete_session_data(msg->call_id,
+                                                  msg->role,
+                                                  msg->function,
+                                                  msg->trail);
+
+        // Move onto the next store unless we've got data contention, in which
+        // case we want to try this store. If a remote site is uncontactable we
+        // ignore it.
+        if (rc != Store::Status::DATA_CONTENTION)
+        {
+          ++remote_store;
+        }
+      }
+
+      TRC_INFO("Received STOP for session %s, deleting session and timer using timer ID %s", msg->call_id.c_str(), sess->timer_id.c_str());
 
       if (sess->timer_id != "NO_TIMER")
       {
@@ -165,7 +255,7 @@ std::string SessionManager::create_opaque_data(Message* msg)
   doc.Accept(w);
   std::string body = s.GetString();
 
-  LOG_DEBUG("Built INTERIM request body: %s", body.c_str());
+  TRC_DEBUG("Built INTERIM request body: %s", body.c_str());
 
   return body;
 }
@@ -257,6 +347,7 @@ void SessionManager::on_ccf_response(bool accepted,
 
       // Set the timer id initially to NO_TIMER - this isn't included in the path of the POST
       std::string timer_id = NO_TIMER;
+      std::map<std::string, uint32_t> tags; tags["CALL"] = 1;
 
       if (msg->session_refresh_time > interim_interval)
       {
@@ -265,12 +356,13 @@ void SessionManager::on_ccf_response(bool accepted,
                                                   msg->session_refresh_time, // repeat-for
                                                   "/call-id/"+Utils::url_escape(msg->call_id)+"?timer-interim=true",
                                                   create_opaque_data(msg),
-                                                  msg->trail);
+                                                  msg->trail,
+                                                  tags);
 
          if (status != HTTP_OK)
          {
            // LCOV_EXCL_START
-           LOG_ERROR("Chronos POST failed");
+           TRC_ERROR("Chronos POST failed");
            // LCOV_EXCL_STOP
          }
       };
@@ -279,7 +371,7 @@ void SessionManager::on_ccf_response(bool accepted,
       new_timer.add_static_param(interim_interval);
       SAS::report_event(new_timer);
 
-      LOG_INFO("Writing session to store");
+      TRC_INFO("Writing session to store");
       SessionStore::Session* sess = new SessionStore::Session();
       sess->session_id = session_id;
       sess->interim_interval = interim_interval;
@@ -292,11 +384,25 @@ void SessionManager::on_ccf_response(bool accepted,
       sess->session_refresh_time = msg->session_refresh_time;
 
       // Do this unconditionally - if it fails, this processing has already been done elsewhere
-      _store->set_session_data(msg->call_id,
-                               msg->role,
-                               msg->function,
-                               sess,
-                               msg->trail);
+      _local_store->set_session_data(msg->call_id,
+                                     msg->role,
+                                     msg->function,
+                                     sess,
+                                     true,
+                                     msg->trail);
+
+      for (std::vector<SessionStore*>::iterator remote_store = _remote_stores.begin();
+           remote_store != _remote_stores.end();
+           ++remote_store)
+      {
+        (*remote_store)->set_session_data(msg->call_id,
+                                          msg->role,
+                                          msg->function,
+                                          sess,
+                                          true,
+                                          msg->trail);
+      }
+
       delete sess; sess = NULL;
     }
 
@@ -305,18 +411,28 @@ void SessionManager::on_ccf_response(bool accepted,
   }
   else
   {
-    LOG_WARNING("Session for %s received error from CDF", msg->call_id.c_str());
+    TRC_WARNING("Session for %s received error from CDF", msg->call_id.c_str());
     if (msg->record_type.isInterim())
     {
       if (rc == 5002)
       {
         // 5002 means the CDF has no record of this session. It's pointless to send any
         // more messages - delete the session from the store.
-        LOG_INFO("Session for %s received 5002 error from CDF, deleting", msg->call_id.c_str());
-        _store->delete_session_data(msg->call_id,
-                                    msg->role,
-                                    msg->function,
-                                    msg->trail);
+        TRC_INFO("Session for %s received 5002 error from CDF, deleting", msg->call_id.c_str());
+        _local_store->delete_session_data(msg->call_id,
+                                          msg->role,
+                                          msg->function,
+                                          msg->trail);
+
+        for (std::vector<SessionStore*>::iterator remote_store = _remote_stores.begin();
+             remote_store != _remote_stores.end();
+             ++remote_store)
+        {
+          (*remote_store)->delete_session_data(msg->call_id,
+                                               msg->role,
+                                               msg->function,
+                                               msg->trail);
+        }
       }
       else if (!msg->timer_interim)
       {
@@ -325,7 +441,7 @@ void SessionManager::on_ccf_response(bool accepted,
 
         if (msg->session_refresh_time > interim_interval)
         {
-          LOG_INFO("Received INTERIM for session %s, updating timer using timer ID %s", msg->call_id.c_str(), msg->timer_id.c_str());
+          TRC_INFO("Received INTERIM for session %s, updating timer using timer ID %s", msg->call_id.c_str(), msg->timer_id.c_str());
 
           std::string timer_id = msg->timer_id;
           send_chronos_update(timer_id,
@@ -353,23 +469,34 @@ void SessionManager::on_ccf_response(bool accepted,
 // contention then this update will fail
 void SessionManager::update_timer_id(Message* msg, std::string timer_id)
 {
-  SessionStore::Session* sess = _store->get_session_data(msg->call_id,
-                                                         msg->role,
-                                                         msg->function,
-                                                         msg->trail);
-  if (sess != NULL)
+  std::vector<SessionStore*> stores = {_local_store};
+  stores.insert(stores.end(),
+                _remote_stores.begin(),
+                _remote_stores.end());
+
+  for (std::vector<SessionStore*>::iterator store = stores.begin();
+       store != stores.end();
+       ++store)
   {
-    sess->timer_id = timer_id;
-    msg->timer_id = timer_id;
+    SessionStore::Session* sess = (*store)->get_session_data(msg->call_id,
+                                                             msg->role,
+                                                             msg->function,
+                                                             msg->trail);
+    if (sess != NULL)
+    {
+      sess->timer_id = timer_id;
+      msg->timer_id = timer_id;
 
-    _store->set_session_data(msg->call_id,
-                             msg->role,
-                             msg->function,
-                             sess,
-                             msg->trail);
+      (*store)->set_session_data(msg->call_id,
+                                 msg->role,
+                                 msg->function,
+                                 sess,
+                                 false,
+                                 msg->trail);
+    }
+
+    delete sess; sess = NULL;
   }
-
-  delete sess; sess = NULL;
 }
 
 void SessionManager::send_chronos_update(std::string& timer_id,
@@ -379,6 +506,8 @@ void SessionManager::send_chronos_update(std::string& timer_id,
                                          const std::string& opaque_data,
                                          SAS::TrailId trail)
 {
+  std::map<std::string, uint32_t> tags {{"CALL", 1}};
+
   if (timer_id == NO_TIMER)
   {
     // LCOV_EXCL_START
@@ -388,7 +517,8 @@ void SessionManager::send_chronos_update(std::string& timer_id,
                            session_refresh_time,
                            callback_uri,
                            opaque_data,
-                           trail);
+                           trail,
+                           tags);
     // LCOV_EXCL_STOP
   }
   else
@@ -398,6 +528,7 @@ void SessionManager::send_chronos_update(std::string& timer_id,
                           session_refresh_time,
                           callback_uri,
                           opaque_data,
-                          trail);
+                          trail,
+                          tags);
   }
 }
