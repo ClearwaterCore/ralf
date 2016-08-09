@@ -53,10 +53,11 @@ check process ralf_process with pidfile /var/run/ralf/ralf.pid
   # generate a core file and trigger diagnostics collection.
   if memory > 80% for 6 cycles then exec "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf abort'"
 
-  # Clear any alarms if the process has been running for 30 seconds
-  if uptime < 30 seconds
-     then exec "/bin/true"
-     else if succeeded then exec "/usr/share/clearwater/bin/issue-alarm monit 2000.1"
+check program uptime_ralf with path "/usr/share/clearwater/bin/check-uptime /var/run/ralf/ralf.pid monit 2000.1"
+  group ralf
+  depends on ralf_process
+  every 3 cycles
+  if status != 0 then alert
 
 # Check the HTTP interface. This depends on the Ralf process (and so won't run
 # unless the Ralf process is running)
