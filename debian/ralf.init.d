@@ -142,6 +142,8 @@ get_daemon_args()
         [ -z "$exception_max_ttl" ] || exception_max_ttl_arg="--exception-max-ttl=$exception_max_ttl"
         [ -z "$cdf_identity" ] || billing_peer_arg="--billing-peer=$cdf_identity"
         [ -z $signaling_namespace ] || namespace_prefix="ip netns exec $signaling_namespace"
+        [ -z "$chronos_hostname" ] || chronos_hostname_arg="--chronos-hostname=$chronos_hostname"
+        [ -z "$ralf_hostname" ] || ralf_hostname_arg="--ralf-hostname=$ralf_hostname"
 
         DAEMON_ARGS="--localhost=$local_ip
                      --http=$local_ip
@@ -150,6 +152,8 @@ get_daemon_args()
                      --dns-server=$signaling_dns_server
                      --log-file=$log_directory
                      --log-level=$log_level
+                     $chronos_hostname_arg
+                     $ralf_hostname_arg
                      $billing_realm_arg
                      $billing_peer_arg
                      $target_latency_us_arg
@@ -158,8 +162,7 @@ get_daemon_args()
                      $min_token_rate_arg
                      $exception_max_ttl_arg
                      $sas_signaling_if_arg
-                     --sas=$sas_server,$NAME@$public_hostname
-                     --pidfile=$PIDFILE"
+                     --sas=$sas_server,$NAME@$public_hostname"
 
         [ "$http_blacklist_duration" = "" ]     || DAEMON_ARGS="$DAEMON_ARGS --http-blacklist-duration=$http_blacklist_duration"
         [ "$diameter_blacklist_duration" = "" ] || DAEMON_ARGS="$DAEMON_ARGS --diameter-blacklist-duration=$diameter_blacklist_duration"
@@ -184,7 +187,7 @@ do_start()
         # daemon is not running, so attempt to start it.
         setup_environment
         get_daemon_args
-        $namespace_prefix start-stop-daemon --start --quiet --background --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS \
+        $namespace_prefix start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS --daemon --pidfile=$PIDFILE \
                 || return 2
         # Add code here, if necessary, that waits for the process to be ready
         # to handle requests from services started subsequently which depend
@@ -216,7 +219,7 @@ do_run()
 
         setup_environment
         get_daemon_args
-        $namespace_prefix start-stop-daemon --start --quiet --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS \
+        $namespace_prefix start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS --pidfile=$PIDFILE \
                 || return 2
 }
 

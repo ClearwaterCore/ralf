@@ -42,7 +42,6 @@
 
 #include "ralf_pd_definitions.h"
 
-#include "ipv6utils.h"
 #include "memcachedstore.h"
 #include "httpresolver.h"
 #include "chronosconnection.h"
@@ -77,7 +76,10 @@ enum OptionTypes
   HTTP_BLACKLIST_DURATION,
   DIAMETER_BLACKLIST_DURATION,
   SAS_USE_SIGNALING_IF,
-  PIDFILE
+  PIDFILE,
+  DAEMON,
+  CHRONOS_HOSTNAME,
+  RALF_HOSTNAME
 };
 
 enum struct MemcachedWriteFormat
@@ -112,7 +114,10 @@ struct options
   int http_blacklist_duration;
   int diameter_blacklist_duration;
   std::string pidfile;
+  bool daemon;
   bool sas_signaling_if;
+  std::string chronos_hostname;
+  std::string ralf_hostname;
 };
 
 const static struct option long_opt[] =
@@ -139,7 +144,10 @@ const static struct option long_opt[] =
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
   {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
   {"pidfile",                     required_argument, NULL, PIDFILE},
+  {"daemon",                      no_argument,       NULL, DAEMON},
   {"sas-use-signaling-interface", no_argument,       NULL, SAS_USE_SIGNALING_IF},
+  {"chronos-hostname",            required_argument, NULL, CHRONOS_HOSTNAME},
+  {"ralf-hostname",               required_argument, NULL, RALF_HOSTNAME},
   {NULL,                          0,                 NULL, 0},
 };
 
@@ -190,7 +198,15 @@ void usage(void)
        "     --sas-use-signaling-interface\n"
        "                            Whether SAS traffic is to be dispatched over the signaling network\n"
        "                            interface rather than the default management interface\n"
+       "     --chronos-hostname <hostname>\n"
+       "                            The hostname of the remote Chronos cluster to use. If unset, the default\n"
+       "                            is to use localhost, using localhost as the callback URL.\n"
+       "     --ralf-hostname <hostname:port>\n"
+       "                            The hostname and port of the cluster of Ralf nodes to which this Ralf is\n"
+       "                            a member. The port should be the HTTP port the nodes are listening on.\n"
+       "                            This is used to form the callback URL for the Chronos cluser.\n"
        "     --pidfile=<filename>   Write pidfile\n"
+       "     --daemon               Run as a daemon\n"
        " -h, --help                 Show this help screen\n"
       );
 }
@@ -212,6 +228,10 @@ int init_logging_options(int argc, char**argv, struct options& options)
 
     case 'L':
       options.log_level = atoi(optarg);
+      break;
+
+    case DAEMON:
+      options.daemon = true;
       break;
 
     default:
@@ -262,11 +282,6 @@ int init_options(int argc, char**argv, struct options& options)
         TRC_INFO("SAS set to %s\n", options.sas_server.c_str());
         TRC_INFO("System name is set to %s\n", options.sas_system_name.c_str());
       }
-      else
-      {
-        CL_RALF_INVALID_SAS_OPTION.log();
-        TRC_WARNING("Invalid --sas option, SAS disabled\n");
-      }
     }
     break;
 
@@ -303,7 +318,8 @@ int init_options(int argc, char**argv, struct options& options)
 
     case 'F':
     case 'L':
-      // Ignore F and L - these are handled by init_logging_options
+    case DAEMON:
+      // Ignore daemon, F and L - these are handled by init_logging_options
       break;
 
     case 'h':
@@ -393,6 +409,14 @@ int init_options(int argc, char**argv, struct options& options)
       options.sas_signaling_if = true;
       break;
 
+    case CHRONOS_HOSTNAME:
+      options.chronos_hostname = std::string(optarg);
+      break;
+
+    case RALF_HOSTNAME:
+      options.ralf_hostname = std::string(optarg);
+      break;
+
     default:
       CL_RALF_INVALID_OPTION_C.log();
       TRC_ERROR("Unknown option: %d.  Run with --help for options.\n", opt);
@@ -467,32 +491,25 @@ int main(int argc, char**argv)
   options.exception_max_ttl = 600;
   options.http_blacklist_duration = HttpResolver::DEFAULT_BLACKLIST_DURATION;
   options.diameter_blacklist_duration = DiameterResolver::DEFAULT_BLACKLIST_DURATION;
+  options.pidfile = "";
+  options.daemon = false;
   options.sas_signaling_if = false;
-
-  // Initialise ENT logging before making "Started" log
-  PDLogStatic::init(argv[0]);
-
-  CL_RALF_STARTED.log();
 
   if (init_logging_options(argc, argv, options) != 0)
   {
     return 1;
   }
 
-  Log::setLoggingLevel(options.log_level);
-  if ((options.log_to_file) && (options.log_directory != ""))
-  {
-    // Work out the program name from argv[0], stripping anything before the final slash.
-    char* prog_name = argv[0];
-    char* slash_ptr = rindex(argv[0], '/');
-    if (slash_ptr != NULL)
-    {
-      prog_name = slash_ptr + 1;
-    }
-    Log::setLogger(new Logger(options.log_directory, prog_name));
-  }
+  Utils::daemon_log_setup(argc,
+                          argv,
+                          options.daemon,
+                          options.log_directory,
+                          options.log_level,
+                          options.log_to_file);
 
-  TRC_STATUS("Log level set to %d", options.log_level);
+  // We should now have a connection to syslog so we can write the started ENT
+  // log.
+  CL_RALF_STARTED.log();
 
   std::stringstream options_ss;
   for (int ii = 0; ii < argc; ii++)
@@ -520,30 +537,43 @@ int main(int argc, char**argv)
     }
   }
 
+  start_signal_handlers();
+
+  if (options.sas_server == "0.0.0.0")
+  {
+    TRC_WARNING("SAS server option was invalid or not configured - SAS is disabled");
+    CL_RALF_INVALID_SAS_OPTION.log();
+  }
+
   // Create Ralf's alarm objects. Note that the alarm identifier strings must match those
   // in the alarm definition JSON file exactly.
-  CommunicationMonitor* cdf_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+  AlarmManager* alarm_manager = new AlarmManager();
+
+  CommunicationMonitor* cdf_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                              "ralf",
                                                                               AlarmDef::RALF_CDF_COMM_ERROR,
                                                                               AlarmDef::CRITICAL),
                                                                     "Ralf",
                                                                     "CDF");
 
-  CommunicationMonitor* chronos_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+  CommunicationMonitor* chronos_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                                  "ralf",
                                                                                   AlarmDef::RALF_CHRONOS_COMM_ERROR,
                                                                                   AlarmDef::CRITICAL),
                                                                         "Ralf",
                                                                         "Chronos");
 
-  CommunicationMonitor* memcached_comm_monitor = new CommunicationMonitor(new Alarm("ralf",
+  CommunicationMonitor* memcached_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                                    "ralf",
                                                                                     AlarmDef::RALF_MEMCACHED_COMM_ERROR,
                                                                                     AlarmDef::CRITICAL),
                                                                           "Ralf",
                                                                           "Memcached");
 
-  Alarm* vbucket_alarm = new Alarm("ralf", AlarmDef::RALF_VBUCKET_ERROR, AlarmDef::MAJOR);
-
-  // Start the alarm request agent
-  AlarmReqAgent::get_instance().start();
+  Alarm* vbucket_alarm = new Alarm(alarm_manager,
+                                   "ralf",
+                                   AlarmDef::RALF_VBUCKET_ERROR,
+                                   AlarmDef::MAJOR);
 
   MemcachedStore* mstore = new MemcachedStore(true,
                                               "./cluster_settings",
@@ -627,41 +657,71 @@ int main(int argc, char**argv)
   // Create a DNS resolver.  We'll use this both for HTTP and for Diameter.
   DnsCachedResolver* dns_resolver = new DnsCachedResolver(options.dns_server);
 
+  // Create a connection to Chronos.
   std::string port_str = std::to_string(options.http_port);
 
-  // We want Chronos to call back to its local sprout instance so that we can
-  // handle Ralfs failing without missing timers.
-  int http_af = AF_INET;
+  std::string chronos_service;
   std::string chronos_callback_addr = "127.0.0.1:" + port_str;
-  std::string local_chronos = "127.0.0.1:7253";
-  if (is_ipv6(options.http_address))
+  int http_af = AF_INET;
+
+  if (options.chronos_hostname == "" || options.ralf_hostname == "")
   {
-    http_af = AF_INET6;
-    chronos_callback_addr = "[::1]:" + port_str;
-    local_chronos = "[::1]:7253";
+    // If we are using a local chronos cluster, we want Chronos to call back to
+    // its local Ralf instance so that we can handle Ralfs failing without missing
+    // timers.
+    chronos_service = "127.0.0.1:7253";
+
+    Utils::IPAddressType address_type = Utils::parse_ip_address(options.http_address);
+
+    if ((address_type == Utils::IPAddressType::IPV6_ADDRESS) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_WITH_PORT) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_BRACKETED))
+    {
+      http_af = AF_INET6;
+      chronos_callback_addr = "[::1]:" + port_str;
+    }
+  }
+  else
+  {
+    chronos_service = options.chronos_hostname + ":7253";
+
+    Utils::IPAddressType address_type = Utils::parse_ip_address(options.chronos_hostname);
+
+    if ((address_type == Utils::IPAddressType::IPV6_ADDRESS) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_WITH_PORT) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_BRACKETED))
+    {
+      http_af = AF_INET6;
+    }
+
+    chronos_callback_addr = options.ralf_hostname;
   }
 
   // Create a connection to Chronos.  This requires an HttpResolver.
-  TRC_STATUS("Creating connection to Chronos at %s using %s as the callback URI", local_chronos.c_str(), chronos_callback_addr.c_str());
+  TRC_STATUS("Creating connection to Chronos at %s using %s as the callback URI",
+             chronos_service.c_str(), chronos_callback_addr.c_str());
+
   HttpResolver* http_resolver = new HttpResolver(dns_resolver,
                                                  http_af,
                                                  options.http_blacklist_duration);
-  ChronosConnection* timer_conn = new ChronosConnection(local_chronos, chronos_callback_addr, http_resolver, chronos_comm_monitor);
+  ChronosConnection* timer_conn = new ChronosConnection(chronos_service,
+                                                        chronos_callback_addr,
+                                                        http_resolver,
+                                                        chronos_comm_monitor);
 
-  cfg->mgr = new SessionManager(store, dict, factory, timer_conn, diameter_stack, hc);
+  cfg->mgr = new SessionManager(store, {}, dict, factory, timer_conn, diameter_stack, hc);
 
-  HttpStack* http_stack = HttpStack::get_instance();
+  HttpStack* http_stack = new HttpStack(options.http_threads,
+                                        exception_handler,
+                                        access_logger,
+                                        load_monitor);
   HttpStackUtils::PingHandler ping_handler;
   BillingHandler billing_handler(cfg);
   try
   {
     http_stack->initialize();
-    http_stack->configure(options.http_address,
-                          options.http_port,
-                          options.http_threads,
-                          exception_handler,
-                          access_logger,
-                          load_monitor);
+    http_stack->bind_tcp_socket(options.http_address,
+                                options.http_port);
     http_stack->register_handler("^/ping$", &ping_handler);
     http_stack->register_handler("^/call-id/[^/]*$", &billing_handler);
     http_stack->start();
@@ -705,6 +765,17 @@ int main(int argc, char**argv)
     fprintf(stderr, "Caught HttpStack::Exception - %s - %d\n", e._func, e._rc);
   }
 
+  try
+  {
+    diameter_stack->stop();
+    diameter_stack->wait_stopped();
+  }
+  catch (Diameter::Stack::Exception& e)
+  {
+    CL_RALF_DIAMETER_STOP_FAIL.log(e._func, e._rc);
+    TRC_ERROR("Failed to stop Diameter stack - function %s, rc %d", e._func, e._rc);
+  }
+
   realm_manager->stop();
 
   delete realm_manager; realm_manager = NULL;
@@ -716,15 +787,14 @@ int main(int argc, char**argv)
   hc->stop_thread();
   delete exception_handler; exception_handler = NULL;
   delete hc; hc = NULL;
-
-  // Stop the alarm request agent
-  AlarmReqAgent::get_instance().stop();
+  delete http_stack; http_stack = NULL;
 
   // Delete Ralf's alarm objects
   delete cdf_comm_monitor;
   delete chronos_comm_monitor;
   delete memcached_comm_monitor;
   delete vbucket_alarm;
+  delete alarm_manager;
 
   signal(SIGTERM, SIG_DFL);
   sem_destroy(&term_sem);

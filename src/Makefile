@@ -3,6 +3,7 @@ TEST_TARGETS := ralf_test
 
 COMMON_SOURCES := accesslogger.cpp \
                   localstore.cpp \
+                  memcached_connection_pool.cpp \
                   memcachedstore.cpp \
                   memcachedstoreview.cpp \
                   memcached_config.cpp \
@@ -19,7 +20,9 @@ COMMON_SOURCES := accesslogger.cpp \
                   handlers.cpp \
                   logger.cpp \
                   saslogger.cpp \
-                  httpresolver.cpp \
+                  a_record_resolver.cpp \
+                  http_connection_pool.cpp \
+                  httpclient.cpp \
                   httpconnection.cpp \
                   chronosconnection.cpp \
                   load_monitor.cpp \
@@ -27,20 +30,19 @@ COMMON_SOURCES := accesslogger.cpp \
                   utils.cpp \
                   zmq_lvc.cpp \
                   log.cpp \
-                  pdlog.cpp \
                   baseresolver.cpp \
                   diameterresolver.cpp \
                   dnscachedresolver.cpp \
                   dnsparser.cpp \
                   realmmanager.cpp \
-                  ipv6utils.cpp \
                   alarm.cpp \
                   base_communication_monitor.cpp \
                   communicationmonitor.cpp \
                   exception_handler.cpp \
                   health_checker.cpp \
                   counter.cpp \
-                  namespace_hop.cpp
+                  namespace_hop.cpp \
+                  astaire_resolver.cpp
 
 ralf_SOURCES := ${COMMON_SOURCES} main.cpp
 ralf_test_SOURCES := ${COMMON_SOURCES} \
@@ -50,7 +52,8 @@ ralf_test_SOURCES := ${COMMON_SOURCES} \
                      test_handlers.cpp \
                      test_main.cpp \
                      fakelogger.cpp \
-                     mock_chronos_connection.cpp
+                     mock_chronos_connection.cpp \
+                     pthread_cond_var_helper.cpp
 
 COMMON_CPPFLAGS := -I../include \
                    -I../usr/include \
