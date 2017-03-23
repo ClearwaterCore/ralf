@@ -580,7 +580,7 @@ int main(int argc, char**argv)
 
   TRC_INFO(options_str.c_str());
 
-  if (init_logging_options(argc, argv, options) != 0)
+  if (init_options(argc, argv, options) != 0)
   {
     return 1;
   }
