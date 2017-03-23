@@ -1,5 +1,5 @@
 /**
- * @file main.cpp main function for homestead
+ * @file main.cpp main function for ralf
  *
  * Project Clearwater - IMS in the Cloud
  * Copyright (C) 2013  Metaswitch Networks Ltd
@@ -38,8 +38,10 @@
 #include <signal.h>
 #include <semaphore.h>
 #include <strings.h>
+#include <boost/filesystem.hpp>
 
-#include "ipv6utils.h"
+#include "ralf_pd_definitions.h"
+
 #include "memcachedstore.h"
 #include "httpresolver.h"
 #include "chronosconnection.h"
@@ -56,15 +58,52 @@
 #include "load_monitor.h"
 #include "diameterresolver.h"
 #include "realmmanager.h"
+#include "astaire_resolver.h"
+#include "communicationmonitor.h"
+#include "exception_handler.h"
+#include "ralf_alarmdefinition.h"
+#include "namespace_hop.h"
+
+enum OptionTypes
+{
+  DNS_SERVER=256+1,
+  MEMCACHED_WRITE_FORMAT,
+  TARGET_LATENCY_US,
+  MAX_TOKENS,
+  INIT_TOKEN_RATE,
+  MIN_TOKEN_RATE,
+  EXCEPTION_MAX_TTL,
+  BILLING_PEER,
+  HTTP_BLACKLIST_DURATION,
+  DIAMETER_BLACKLIST_DURATION,
+  ASTAIRE_BLACKLIST_DURATION,
+  SAS_USE_SIGNALING_IF,
+  PIDFILE,
+  LOCAL_SITE_NAME,
+  SESSION_STORES,
+  DAEMON,
+  CHRONOS_HOSTNAME,
+  RALF_CHRONOS_CALLBACK_URI,
+  RALF_HOSTNAME
+};
+
+enum struct MemcachedWriteFormat
+{
+  BINARY, JSON
+};
 
 struct options
 {
   std::string local_host;
+  std::string local_site_name;
   std::string diameter_conf;
+  std::vector<std::string> dns_servers;
+  std::vector<std::string> session_stores;
   std::string http_address;
   unsigned short http_port;
   int http_threads;
   std::string billing_realm;
+  std::string billing_peer;
   int max_peers;
   bool access_log_enabled;
   std::string access_log_directory;
@@ -73,22 +112,56 @@ struct options
   int log_level;
   std::string sas_server;
   std::string sas_system_name;
+  MemcachedWriteFormat memcached_write_format;
+  int target_latency_us;
+  int max_tokens;
+  float init_token_rate;
+  float min_token_rate;
+  int exception_max_ttl;
+  int http_blacklist_duration;
+  int diameter_blacklist_duration;
+  int astaire_blacklist_duration;
+  std::string pidfile;
+  bool daemon;
+  bool sas_signaling_if;
+  std::string chronos_hostname;
+  std::string ralf_chronos_callback_uri;
+  std::string ralf_hostname;
 };
 
 const static struct option long_opt[] =
 {
-  {"localhost",         required_argument, NULL, 'l'},
-  {"diameter-conf",     required_argument, NULL, 'c'},
-  {"http",              required_argument, NULL, 'H'},
-  {"http-threads",      required_argument, NULL, 't'},
-  {"billing-realm",     required_argument, NULL, 'b'},
-  {"max-peers",         required_argument, NULL, 'p'},
-  {"access-log",        required_argument, NULL, 'a'},
-  {"log-file",          required_argument, NULL, 'F'},
-  {"log-level",         required_argument, NULL, 'L'},
-  {"sas",               required_argument, NULL, 's'},
-  {"help",              no_argument,       NULL, 'h'},
-  {NULL,                0,                 NULL, 0},
+  {"localhost",                   required_argument, NULL, 'l'},
+  {"local-site-name",             required_argument, NULL, LOCAL_SITE_NAME},
+  {"diameter-conf",               required_argument, NULL, 'c'},
+  {"dns-servers",                 required_argument, NULL, DNS_SERVER},
+  {"session-stores",              required_argument, NULL, SESSION_STORES},
+  {"http",                        required_argument, NULL, 'H'},
+  {"http-threads",                required_argument, NULL, 't'},
+  {"billing-realm",               required_argument, NULL, 'b'},
+  {"billing-peer",                required_argument, NULL, BILLING_PEER},
+  {"max-peers",                   required_argument, NULL, 'p'},
+  {"access-log",                  required_argument, NULL, 'a'},
+  {"log-file",                    required_argument, NULL, 'F'},
+  {"log-level",                   required_argument, NULL, 'L'},
+  {"sas",                         required_argument, NULL, 's'},
+  {"help",                        no_argument,       NULL, 'h'},
+  {"memcached-write-format",      required_argument, 0,    MEMCACHED_WRITE_FORMAT},
+  {"target-latency-us",           required_argument, NULL, TARGET_LATENCY_US},
+  {"max-tokens",                  required_argument, NULL, MAX_TOKENS},
+  {"init-token-rate",             required_argument, NULL, INIT_TOKEN_RATE},
+  {"min-token-rate",              required_argument, NULL, MIN_TOKEN_RATE},
+  {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
+  {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
+  {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
+  {"astaire-blacklist-duration",  required_argument, NULL, ASTAIRE_BLACKLIST_DURATION},
+  {"pidfile",                     required_argument, NULL, PIDFILE},
+  {"daemon",                      no_argument,       NULL, DAEMON},
+  {"sas-use-signaling-interface", no_argument,       NULL, SAS_USE_SIGNALING_IF},
+  {"chronos-hostname",            required_argument, NULL, CHRONOS_HOSTNAME},
+  {"ralf-chronos-callback-uri",   required_argument, NULL, RALF_CHRONOS_CALLBACK_URI},
+  {"ralf-hostname",               required_argument, NULL, RALF_HOSTNAME},
+  {NULL,                          0,                 NULL, 0},
 };
 
 static std::string options_description = "l:c:H:t:b:p:a:F:L:s:h";
@@ -98,11 +171,21 @@ void usage(void)
   puts("Options:\n"
        "\n"
        " -l, --localhost <hostname> Specify the local hostname or IP address\n"
+       "     --local-site-name <name>\n"
+       "                            The name of the local site (used in a geo-redundant deployment)\n"
        " -c, --diameter-conf <file> File name for Diameter configuration\n"
+       "     --dns-servers <server>[,<server2>,<server3>]\n"
+       "                            IP addresses of the DNS servers to use (defaults to 127.0.0.1)\n"
+       "     --session-stores <site_name>=<domain>[:<port>][,<site_name>=<domain>[:<port>],...]\n"
+       "                            Specifies location of the memcached store in each GR site for storing\n"
+       "                            sessions. One of the sites must be the local site. Remote sites for\n"
+       "                            geo-redundant storage are optional.\n"
        " -H, --http <address>[:<port>]\n"
        "                            Set HTTP bind address and port (default: 0.0.0.0:8888)\n"
        " -t, --http-threads N       Number of HTTP threads (default: 1)\n"
        " -b, --billing-realm <name> Set Destination-Realm on Rf messages\n"
+       "     --billing-peer <name>  If Ralf can't find a CDF by resolving the --billing-realm,\n"
+       "                            it will try and connect to this Diameter peer.\n"
        " -p, --max-peers N          Number of peers to connect to (default: 2)\n"
        " -a, --access-log <directory>\n"
        "                            Generate access logs in specified directory\n"
@@ -110,10 +193,48 @@ void usage(void)
        "                            Log to file in specified directory\n"
        " -L, --log-level N          Set log level to N (default: 4)\n"
        " -s, --sas <host>,<system name>\n"
-       " Use specified host as Service Assurance Server and specified\n"
-       " system name to identify this system to SAS. If this option isn't\n"
-       " specified, SAS is disabled\n"
-       " -h, --help                 Show this help screen\n");
+       "                            Use specified host as Service Assurance Server and specified\n"
+       "                            system name to identify this system to SAS. If this option isn't\n"
+       "                            specified, SAS is disabled\n"
+       "     --memcached-write-format\n"
+       "                            The data format to use when writing sessions\n"
+       "                            to memcached. Values are 'binary' and 'json'\n"
+       "                            (defaults to 'json')\n"
+       "     --target-latency-us <usecs>\n"
+       "                            Target latency above which throttling applies (default: 100000)\n"
+       "     --max-tokens N         Maximum number of tokens allowed in the token bucket (used by\n"
+       "                            the throttling code (default: 1000))\n"
+       "     --init-token-rate N    Initial token refill rate of tokens in the token bucket (used by\n"
+       "                            the throttling code (default: 100.0))\n"
+       "     --min-token-rate N     Minimum token refill rate of tokens in the token bucket (used by\n"
+       "                            the throttling code (default: 10.0))\n"
+       "     --exception-max-ttl <secs>\n"
+       "                            The maximum time before the process exits if it hits an exception.\n"
+       "                            The actual time is randomised.\n"
+       "     --http-blacklist-duration <secs>\n"
+       "                            The amount of time to blacklist an HTTP peer when it is unresponsive.\n"
+       "     --diameter-blacklist-duration <secs>\n"
+       "                            The amount of time to blacklist a Diameter peer when it is unresponsive.\n"
+       "     --astaire-blacklist-duration <secs>\n"
+       "                            The amount of time to blacklist an Astaire node when it is unresponsive.\n"
+       "     --sas-use-signaling-interface\n"
+       "                            Whether SAS traffic is to be dispatched over the signaling network\n"
+       "                            interface rather than the default management interface\n"
+       "     --chronos-hostname <hostname>\n"
+       "                            The hostname of the remote Chronos cluster to use. If unset, the default\n"
+       "                            is to use localhost, using localhost as the callback URL.\n"
+       "     --ralf-chronos-callback-uri <hostname>\n"
+       "                            The ralf hostname used for Chronos callbacks. If unset the default \n"
+       "                            is to use the ralf-hostname.\n"
+       "                            Ignored if chronos-hostname is not set.\n"
+       "     --ralf-hostname <hostname:port>\n"
+       "                            The hostname and port of the cluster of Ralf nodes to which this Ralf is\n"
+       "                            a member. The port should be the HTTP port the nodes are listening on.\n"
+       "                            This is used to form the callback URL for the Chronos cluser.\n"
+       "     --pidfile=<filename>   Write pidfile\n"
+       "     --daemon               Run as a daemon\n"
+       " -h, --help                 Show this help screen\n"
+      );
 }
 
 int init_logging_options(int argc, char**argv, struct options& options)
@@ -133,6 +254,10 @@ int init_logging_options(int argc, char**argv, struct options& options)
 
     case 'L':
       options.log_level = atoi(optarg);
+      break;
+
+    case DAEMON:
+      options.daemon = true;
       break;
 
     default:
@@ -155,17 +280,36 @@ int init_options(int argc, char**argv, struct options& options)
     switch (opt)
     {
     case 'l':
-      LOG_INFO("Local host: %s", optarg);
+      TRC_INFO("Local host: %s", optarg);
       options.local_host = std::string(optarg);
       break;
 
     case 'c':
-      LOG_INFO("Diameter configuration file: %s", optarg);
+      TRC_INFO("Diameter configuration file: %s", optarg);
       options.diameter_conf = std::string(optarg);
       break;
 
+    case LOCAL_SITE_NAME:
+      options.local_site_name = std::string(optarg);
+      TRC_INFO("Local site name = %s", optarg);
+      break;
+
+    case SESSION_STORES:
+      {
+        // This option has the format
+        // <site_name>=<domain>,[<site_name>=<domain>,<site_name=<domain>,...].
+        // For now, just split into a vector of <site_name>=<domain> strings. We
+        // need to know the local site name to parse this properly, so we'll do
+        // that later.
+        std::string stores_arg = std::string(optarg);
+        boost::split(options.session_stores,
+                     stores_arg,
+                     boost::is_any_of(","));
+      }
+      break;
+
     case 'H':
-      LOG_INFO("HTTP address: %s", optarg);
+      TRC_INFO("HTTP address: %s", optarg);
       options.http_address = std::string(optarg);
       // TODO: Parse optional HTTP port.
       break;
@@ -180,48 +324,159 @@ int init_options(int argc, char**argv, struct options& options)
       {
         options.sas_server = sas_options[0];
         options.sas_system_name = sas_options[1];
-        LOG_INFO("SAS set to %s\n", options.sas_server.c_str());
-        LOG_INFO("System name is set to %s\n", options.sas_system_name.c_str());
-      }
-      else
-      {
-        LOG_WARNING("Invalid --sas option, SAS disabled\n");
+        TRC_INFO("SAS set to %s\n", options.sas_server.c_str());
+        TRC_INFO("System name is set to %s\n", options.sas_system_name.c_str());
       }
     }
     break;
 
     case 't':
-      LOG_INFO("HTTP threads: %s", optarg);
+      TRC_INFO("HTTP threads: %s", optarg);
       options.http_threads = atoi(optarg);
       break;
 
     case 'b':
-      LOG_INFO("Billing realm: %s", optarg);
+      TRC_INFO("Billing realm: %s", optarg);
       options.billing_realm = std::string(optarg);
       break;
 
+    case BILLING_PEER:
+      TRC_INFO("Fallback Diameter peer to connect to: %s", optarg);
+      options.billing_peer = std::string(optarg);
+      break;
+
     case 'p':
-      LOG_INFO("Maximum peers: %s", optarg);
+      TRC_INFO("Maximum peers: %s", optarg);
       options.max_peers = atoi(optarg);
       break;
 
     case 'a':
-      LOG_INFO("Access log: %s", optarg);
+      TRC_INFO("Access log: %s", optarg);
       options.access_log_enabled = true;
       options.access_log_directory = std::string(optarg);
       break;
 
+    case DNS_SERVER:
+      options.dns_servers.clear();
+      Utils::split_string(std::string(optarg), ',', options.dns_servers, 0, false);
+      TRC_INFO("%d DNS servers passed on the command line",
+               options.dns_servers.size());
+      break;
+
     case 'F':
     case 'L':
-      // Ignore F and L - these are handled by init_logging_options
+    case DAEMON:
+      // Ignore daemon, F and L - these are handled by init_logging_options
       break;
 
     case 'h':
       usage();
       return -1;
 
+    case MEMCACHED_WRITE_FORMAT:
+      if (strcmp(optarg, "binary") == 0)
+      {
+        TRC_INFO("Memcached write format set to 'binary'");
+        options.memcached_write_format = MemcachedWriteFormat::BINARY;
+      }
+      else if (strcmp(optarg, "json") == 0)
+      {
+        TRC_INFO("Memcached write format set to 'json'");
+        options.memcached_write_format = MemcachedWriteFormat::JSON;
+      }
+      else
+      {
+        TRC_WARNING("Invalid value for memcached-write-format, using '%s'."
+                    "Got '%s', valid values are 'json' and 'binary'",
+                    ((options.memcached_write_format == MemcachedWriteFormat::JSON) ?
+                     "json" : "binary"),
+                    optarg);
+      }
+      break;
+
+    case TARGET_LATENCY_US:
+      options.target_latency_us = atoi(optarg);
+      if (options.target_latency_us <= 0)
+      {
+        TRC_ERROR("Invalid --target-latency-us option %s", optarg);
+        return -1;
+      }
+      break;
+
+    case MAX_TOKENS:
+      options.max_tokens = atoi(optarg);
+      if (options.max_tokens <= 0)
+      {
+        TRC_ERROR("Invalid --max-tokens option %s", optarg);
+        return -1;
+      }
+      break;
+
+    case INIT_TOKEN_RATE:
+      options.init_token_rate = atoi(optarg);
+      if (options.init_token_rate <= 0)
+      {
+        TRC_ERROR("Invalid --init-token-rate option %s", optarg);
+        return -1;
+      }
+      break;
+
+    case MIN_TOKEN_RATE:
+      options.min_token_rate = atoi(optarg);
+      if (options.min_token_rate <= 0)
+      {
+        TRC_ERROR("Invalid --min-token-rate option %s", optarg);
+        return -1;
+      }
+      break;
+
+    case EXCEPTION_MAX_TTL:
+      options.exception_max_ttl = atoi(optarg);
+      TRC_INFO("Max TTL after an exception set to %d",
+               options.exception_max_ttl);
+      break;
+
+    case HTTP_BLACKLIST_DURATION:
+      options.http_blacklist_duration = atoi(optarg);
+      TRC_INFO("HTTP blacklist duration set to %d",
+               options.http_blacklist_duration);
+      break;
+
+    case DIAMETER_BLACKLIST_DURATION:
+      options.diameter_blacklist_duration = atoi(optarg);
+      TRC_INFO("Diameter blacklist duration set to %d",
+               options.diameter_blacklist_duration);
+      break;
+
+    case ASTAIRE_BLACKLIST_DURATION:
+      options.astaire_blacklist_duration = atoi(optarg);
+      TRC_INFO("Astaire blacklist duration set to %d",
+               options.astaire_blacklist_duration);
+      break;
+
+    case PIDFILE:
+      options.pidfile = std::string(optarg);
+      break;
+
+    case SAS_USE_SIGNALING_IF:
+      options.sas_signaling_if = true;
+      break;
+
+    case CHRONOS_HOSTNAME:
+      options.chronos_hostname = std::string(optarg);
+      break;
+
+    case RALF_CHRONOS_CALLBACK_URI:
+      options.ralf_chronos_callback_uri = std::string(optarg);
+      break;
+
+    case RALF_HOSTNAME:
+      options.ralf_hostname = std::string(optarg);
+      break;
+
     default:
-      LOG_ERROR("Unknown option: %d.  Run with --help for options.\n", opt);
+      CL_RALF_INVALID_OPTION_C.log();
+      TRC_ERROR("Unknown option: %d.  Run with --help for options.\n", opt);
       return -1;
     }
   }
@@ -230,6 +485,7 @@ int init_options(int argc, char**argv, struct options& options)
 }
 
 static sem_t term_sem;
+ExceptionHandler* exception_handler;
 
 // Signal handler that triggers homestead termination.
 void terminate_handler(int sig)
@@ -238,18 +494,23 @@ void terminate_handler(int sig)
 }
 
 // Signal handler that simply dumps the stack and then crashes out.
-void exception_handler(int sig)
+void signal_handler(int sig)
 {
   // Reset the signal handlers so that another exception will cause a crash.
   signal(SIGABRT, SIG_DFL);
-  signal(SIGSEGV, SIG_DFL);
+  signal(SIGSEGV, signal_handler);
 
   // Log the signal, along with a backtrace.
-  LOG_BACKTRACE("Signal %d caught", sig);
+  TRC_BACKTRACE("Signal %d caught", sig);
 
   // Ensure the log files are complete - the core file created by abort() below
   // will trigger the log files to be copied to the diags bundle
-  LOG_COMMIT();
+  TRC_COMMIT();
+
+  // Check if there's a stored jmp_buf on the thread and handle if there is
+  exception_handler->handle_exception();
+
+  CL_RALF_CRASHED.log(strsignal(sig));
 
   // Dump a core.
   abort();
@@ -258,8 +519,8 @@ void exception_handler(int sig)
 int main(int argc, char**argv)
 {
   // Set up our exception signal handler for asserts and segfaults.
-  signal(SIGABRT, exception_handler);
-  signal(SIGSEGV, exception_handler);
+  signal(SIGABRT, signal_handler);
+  signal(SIGSEGV, signal_handler);
 
   sem_init(&term_sem, 0, 0);
   signal(SIGTERM, terminate_handler);
@@ -267,36 +528,47 @@ int main(int argc, char**argv)
   struct options options;
   options.local_host = "127.0.0.1";
   options.diameter_conf = "/var/lib/ralf/ralf.conf";
+  options.dns_servers.push_back("127.0.0.1");
   options.http_address = "0.0.0.0";
   options.http_port = 10888;
   options.http_threads = 1;
   options.billing_realm = "dest-realm.unknown";
+  options.billing_peer = "";
   options.max_peers = 2;
   options.access_log_enabled = false;
   options.log_to_file = false;
   options.log_level = 0;
   options.sas_server = "0.0.0.0";
   options.sas_system_name = "";
+  options.memcached_write_format = MemcachedWriteFormat::JSON;
+  options.target_latency_us = 100000;
+  options.max_tokens = 1000;
+  options.init_token_rate = 100.0;
+  options.min_token_rate = 10.0;
+  options.exception_max_ttl = 600;
+  options.http_blacklist_duration = HttpResolver::DEFAULT_BLACKLIST_DURATION;
+  options.diameter_blacklist_duration = DiameterResolver::DEFAULT_BLACKLIST_DURATION;
+  options.astaire_blacklist_duration = AstaireResolver::DEFAULT_BLACKLIST_DURATION;
+  options.session_stores = {"127.0.0.1"};
+  options.pidfile = "";
+  options.daemon = false;
+  options.sas_signaling_if = false;
 
   if (init_logging_options(argc, argv, options) != 0)
   {
     return 1;
   }
 
-  Log::setLoggingLevel(options.log_level);
-  if ((options.log_to_file) && (options.log_directory != ""))
-  {
-    // Work out the program name from argv[0], stripping anything before the final slash.
-    char* prog_name = argv[0];
-    char* slash_ptr = rindex(argv[0], '/');
-    if (slash_ptr != NULL)
-    {
-      prog_name = slash_ptr + 1;
-    }
-    Log::setLogger(new Logger(options.log_directory, prog_name));
-  }
+  Utils::daemon_log_setup(argc,
+                          argv,
+                          options.daemon,
+                          options.log_directory,
+                          options.log_level,
+                          options.log_to_file);
 
-  LOG_STATUS("Log level set to %d", options.log_level);
+  // We should now have a connection to syslog so we can write the started ENT
+  // log.
+  CL_RALF_STARTED.log();
 
   std::stringstream options_ss;
   for (int ii = 0; ii < argc; ii++)
@@ -306,12 +578,93 @@ int main(int argc, char**argv)
   }
   std::string options_str = "Command-line options were: " + options_ss.str();
 
-  LOG_INFO(options_str.c_str());
+  TRC_INFO(options_str.c_str());
 
-  if (init_options(argc, argv, options) != 0)
+  if (init_logging_options(argc, argv, options) != 0)
   {
     return 1;
   }
+
+  if (options.pidfile != "")
+  {
+    int rc = Utils::lock_and_write_pidfile(options.pidfile);
+    if (rc == -1)
+    {
+      // Failure to acquire pidfile lock
+      TRC_ERROR("Could not write pidfile - exiting");
+      return 2;
+    }
+  }
+
+  // Parse the session-stores argument.
+  std::string session_store_location;
+  std::vector<std::string> remote_session_stores_locations;
+  if (!options.session_stores.empty())
+  {
+    if (!Utils::parse_stores_arg(options.session_stores,
+                                 options.local_site_name,
+                                 session_store_location,
+                                 remote_session_stores_locations))
+    {
+      TRC_ERROR("Invalid format of session-stores program argument");
+      return 1;
+    }
+
+    if (session_store_location == "")
+    {
+      // If we've failed to find a local site session store then Ralf has
+      // been misconfigured.
+      TRC_ERROR("No local site session store specified");
+      return 1;
+    }
+    else
+    {
+      TRC_INFO("Using memcached session stores");
+      TRC_INFO("  Primary store: %s", session_store_location.c_str());
+      std::string remote_session_stores_str = boost::algorithm::join(remote_session_stores_locations, ", ");
+      TRC_INFO("  Backup store(s): %s", remote_session_stores_str.c_str());
+    }
+  }
+
+  start_signal_handlers();
+
+  if (options.sas_server == "0.0.0.0")
+  {
+    TRC_WARNING("SAS server option was invalid or not configured - SAS is disabled");
+    CL_RALF_INVALID_SAS_OPTION.log();
+  }
+
+  // Create Ralf's alarm objects. Note that the alarm identifier strings must match those
+  // in the alarm definition JSON file exactly.
+  AlarmManager* alarm_manager = new AlarmManager();
+
+  CommunicationMonitor* cdf_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                              "ralf",
+                                                                              AlarmDef::RALF_CDF_COMM_ERROR,
+                                                                              AlarmDef::CRITICAL),
+                                                                    "Ralf",
+                                                                    "CDF");
+
+  CommunicationMonitor* chronos_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                                  "ralf",
+                                                                                  AlarmDef::RALF_CHRONOS_COMM_ERROR,
+                                                                                  AlarmDef::CRITICAL),
+                                                                        "Ralf",
+                                                                        "Chronos");
+
+  CommunicationMonitor* astaire_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                                  "ralf",
+                                                                                  AlarmDef::RALF_ASTAIRE_COMM_ERROR,
+                                                                                  AlarmDef::CRITICAL),
+                                                                          "Ralf",
+                                                                          "Astaire");
+
+  CommunicationMonitor* remote_astaire_comm_monitor = new CommunicationMonitor(new Alarm(alarm_manager,
+                                                                                         "ralf",
+                                                                                         AlarmDef::RALF_REMOTE_ASTAIRE_COMM_ERROR,
+                                                                                         AlarmDef::CRITICAL),
+                                                                               "Ralf",
+                                                                               "remote Astaire");
 
   AccessLogger* access_logger = NULL;
   if (options.access_log_enabled)
@@ -323,63 +676,203 @@ int main(int argc, char**argv)
             "ralf",
             SASEvent::CURRENT_RESOURCE_BUNDLE,
             options.sas_server,
-            sas_write);
+            sas_write,
+            options.sas_signaling_if ? create_connection_in_signaling_namespace
+                                     : create_connection_in_management_namespace);
 
-  LoadMonitor* load_monitor = new LoadMonitor(100000, // Initial target latency (us)
-                                              20, // Maximum token bucket size.
-                                              10.0, // Initial token fill rate (per sec).
-                                              10.0); // Minimum token fill rate (pre sec).
+  LoadMonitor* load_monitor = new LoadMonitor(options.target_latency_us,
+                                              options.max_tokens,
+                                              options.init_token_rate,
+                                              options.min_token_rate);
+
+  HealthChecker* hc = new HealthChecker();
+  hc->start_thread();
+
+  // Create an exception handler. The exception handler doesn't need
+  // to quiesce the process before killing it.
+  exception_handler = new ExceptionHandler(options.exception_max_ttl,
+                                           false,
+                                           hc);
 
   Diameter::Stack* diameter_stack = Diameter::Stack::get_instance();
   Rf::Dictionary* dict = NULL;
-  diameter_stack->initialize();
-  diameter_stack->configure(options.diameter_conf);
-  dict = new Rf::Dictionary();
-  diameter_stack->advertize_application(Diameter::Dictionary::Application::ACCT,
-                                        dict->RF);
-  diameter_stack->start();
 
-  MemcachedStore* mstore = new MemcachedStore(false, "./cluster_settings");
-  SessionStore* store = new SessionStore(mstore);
+  try
+  {
+    diameter_stack->initialize();
+    diameter_stack->configure(options.diameter_conf,
+                              exception_handler,
+                              cdf_comm_monitor);
+    dict = new Rf::Dictionary();
+    diameter_stack->advertize_application(Diameter::Dictionary::Application::ACCT,
+                                          dict->RF);
+    diameter_stack->start();
+  }
+  catch (Diameter::Stack::Exception& e)
+  {
+    CL_RALF_DIAMETER_INIT_FAIL.log(e._func, e._rc);
+    TRC_ERROR("Failed to initialize Diameter stack - function %s, rc %d", e._func, e._rc);
+    exit(2);
+  }
+
+  // Create a DNS resolver.  We'll use this for HTTP, for Diameter and for Astaire.
+  DnsCachedResolver* dns_resolver = new DnsCachedResolver(options.dns_servers);
+
+  int addr_family = AF_INET;
+  struct in6_addr dummy_addr_resolver;
+  if (inet_pton(AF_INET6, options.local_host.c_str(), &dummy_addr_resolver) == 1)
+  {
+    TRC_DEBUG("Local host is an IPv6 address");
+    addr_family = AF_INET6;
+  }
+
+  AstaireResolver* astaire_resolver =
+                        new AstaireResolver(dns_resolver,
+                                            addr_family,
+                                            options.astaire_blacklist_duration);
+
+  SessionStore::SerializerDeserializer* serializer;
+  std::vector<SessionStore::SerializerDeserializer*> deserializers;
+
+  if (options.memcached_write_format == MemcachedWriteFormat::JSON)
+  {
+    serializer = new SessionStore::JsonSerializerDeserializer();
+  }
+  else
+  {
+    serializer = new SessionStore::BinarySerializerDeserializer();
+  }
+
+  deserializers.push_back(new SessionStore::JsonSerializerDeserializer());
+  deserializers.push_back(new SessionStore::BinarySerializerDeserializer());
+
+  TopologyNeutralMemcachedStore* local_memstore =
+                      new TopologyNeutralMemcachedStore(session_store_location,
+                                                        astaire_resolver,
+                                                        false,
+                                                        astaire_comm_monitor);
+
+  SessionStore* local_session_store = new SessionStore(local_memstore,
+                                                       serializer,
+                                                       deserializers);
+
+  std::vector<Store*> remote_memstores;
+  std::vector<SessionStore*> remote_session_stores;
+
+  for (std::vector<std::string>::iterator it = remote_session_stores_locations.begin();
+       it != remote_session_stores_locations.end();
+       ++it)
+  {
+    SessionStore::SerializerDeserializer* serializer;
+    std::vector<SessionStore::SerializerDeserializer*> deserializers;
+
+    if (options.memcached_write_format == MemcachedWriteFormat::JSON)
+    {
+      serializer = new SessionStore::JsonSerializerDeserializer();
+    }
+    else
+    {
+      serializer = new SessionStore::BinarySerializerDeserializer();
+    }
+
+    deserializers.push_back(new SessionStore::JsonSerializerDeserializer());
+    deserializers.push_back(new SessionStore::BinarySerializerDeserializer());
+
+    TopologyNeutralMemcachedStore* remote_memstore =
+                     new TopologyNeutralMemcachedStore(*it,
+                                                       astaire_resolver,
+                                                       true,
+                                                       remote_astaire_comm_monitor);
+    remote_memstores.push_back(remote_memstore);
+    SessionStore* remote_session_store = new SessionStore(remote_memstore,
+                                                          serializer,
+                                                          deserializers);
+    remote_session_stores.push_back(remote_session_store);
+  }
+
   BillingHandlerConfig* cfg = new BillingHandlerConfig();
   PeerMessageSenderFactory* factory = new PeerMessageSenderFactory(options.billing_realm);
 
-  // Create a DNS resolver.  We'll use this both for HTTP and for Diameter.
-  DnsCachedResolver* dns_resolver = new DnsCachedResolver("127.0.0.1");
-
+  // Create a connection to Chronos.
   std::string port_str = std::to_string(options.http_port);
 
-  // We want Chronos to call back to its local sprout instance so that we can
-  // handle Ralfs failing without missing timers.
-  int http_af = AF_INET;
+  std::string chronos_service;
   std::string chronos_callback_addr = "127.0.0.1:" + port_str;
-  std::string local_chronos = "127.0.0.1:7253";
-  if (is_ipv6(options.http_address))
+  int http_af = AF_INET;
+
+  if (options.chronos_hostname == "" || options.ralf_hostname == "")
   {
-    http_af = AF_INET6;
-    chronos_callback_addr = "[::1]:" + port_str;
-    local_chronos = "[::1]:7253";
+    // If we are using a local chronos cluster, we want Chronos to call back to
+    // its local Ralf instance so that we can handle Ralfs failing without missing
+    // timers.
+    chronos_service = "127.0.0.1:7253";
+
+    Utils::IPAddressType address_type = Utils::parse_ip_address(options.http_address);
+
+    if ((address_type == Utils::IPAddressType::IPV6_ADDRESS) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_WITH_PORT) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_BRACKETED))
+    {
+      http_af = AF_INET6;
+      chronos_callback_addr = "[::1]:" + port_str;
+    }
+  }
+  else
+  {
+    chronos_service = options.chronos_hostname + ":7253";
+
+    Utils::IPAddressType address_type = Utils::parse_ip_address(options.chronos_hostname);
+
+    if ((address_type == Utils::IPAddressType::IPV6_ADDRESS) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_WITH_PORT) ||
+        (address_type == Utils::IPAddressType::IPV6_ADDRESS_BRACKETED))
+    {
+      http_af = AF_INET6;
+    }
+
+    if (options.ralf_chronos_callback_uri != "")
+    {
+      // The callback URI doesn't include the port
+      chronos_callback_addr = options.ralf_chronos_callback_uri + ":" + port_str;
+    }
+    else
+    {
+      chronos_callback_addr = options.ralf_hostname;
+    }
   }
 
   // Create a connection to Chronos.  This requires an HttpResolver.
-  LOG_STATUS("Creating connection to Chronos at %s using %s as the callback URI", local_chronos.c_str(), chronos_callback_addr.c_str());
-  HttpResolver* http_resolver = new HttpResolver(dns_resolver, http_af);
-  ChronosConnection* timer_conn = new ChronosConnection(local_chronos, chronos_callback_addr, http_resolver);
-  cfg->mgr = new SessionManager(store, dict, factory, timer_conn, diameter_stack);
+  TRC_STATUS("Creating connection to Chronos at %s using %s as the callback URI",
+             chronos_service.c_str(), chronos_callback_addr.c_str());
 
-  HttpStack* http_stack = HttpStack::get_instance();
+  HttpResolver* http_resolver = new HttpResolver(dns_resolver,
+                                                 http_af,
+                                                 options.http_blacklist_duration);
+  ChronosConnection* timer_conn = new ChronosConnection(chronos_service,
+                                                        chronos_callback_addr,
+                                                        http_resolver,
+                                                        chronos_comm_monitor);
+
+  cfg->mgr = new SessionManager(local_session_store, remote_session_stores, dict, factory, timer_conn, diameter_stack, hc);
+
+  HttpStack* http_stack = new HttpStack(options.http_threads,
+                                        exception_handler,
+                                        access_logger,
+                                        load_monitor);
   HttpStackUtils::PingHandler ping_handler;
   BillingHandler billing_handler(cfg);
   try
   {
     http_stack->initialize();
-    http_stack->configure(options.http_address, options.http_port, options.http_threads, access_logger, load_monitor);
-    http_stack->register_handler("^/ping$", & ping_handler);
+    http_stack->bind_tcp_socket(options.http_address,
+                                options.http_port);
+    http_stack->register_handler("^/ping$", &ping_handler);
     http_stack->register_handler("^/call-id/[^/]*$", &billing_handler);
     http_stack->start();
   }
   catch (HttpStack::Exception& e)
   {
+    CL_RALF_HTTP_ERROR.log(e._func, e._rc);
     fprintf(stderr, "Caught HttpStack::Exception - %s - %d\n", e._func, e._rc);
   }
 
@@ -388,19 +881,23 @@ int main(int argc, char**argv)
   struct in6_addr dummy_addr;
   if (inet_pton(AF_INET6, options.local_host.c_str(), &dummy_addr) == 1)
   {
-    LOG_DEBUG("Local host is an IPv6 address");
+    TRC_DEBUG("Local host is an IPv6 address");
     diameter_af = AF_INET6;
   }
 
-  DiameterResolver* diameter_resolver = new DiameterResolver(dns_resolver, diameter_af);
+  DiameterResolver* diameter_resolver = new DiameterResolver(dns_resolver,
+                                                             diameter_af,
+                                                             options.diameter_blacklist_duration);
   RealmManager* realm_manager = new RealmManager(diameter_stack,
                                                  options.billing_realm,
+                                                 options.billing_peer,
                                                  options.max_peers,
                                                  diameter_resolver);
   realm_manager->start();
 
   sem_wait(&term_sem);
 
+  CL_RALF_ENDED.log();
   try
   {
     http_stack->stop();
@@ -408,16 +905,58 @@ int main(int argc, char**argv)
   }
   catch (HttpStack::Exception& e)
   {
+    CL_RALF_HTTP_STOP_ERROR.log(e._func, e._rc);
     fprintf(stderr, "Caught HttpStack::Exception - %s - %d\n", e._func, e._rc);
   }
 
+  try
+  {
+    diameter_stack->stop();
+    diameter_stack->wait_stopped();
+  }
+  catch (Diameter::Stack::Exception& e)
+  {
+    CL_RALF_DIAMETER_STOP_FAIL.log(e._func, e._rc);
+    TRC_ERROR("Failed to stop Diameter stack - function %s, rc %d", e._func, e._rc);
+  }
+
   realm_manager->stop();
+
   delete realm_manager; realm_manager = NULL;
   delete diameter_resolver; diameter_resolver = NULL;
   delete http_resolver; http_resolver = NULL;
   delete dns_resolver; dns_resolver = NULL;
-
   delete load_monitor; load_monitor = NULL;
+
+  delete local_session_store; local_session_store = NULL;
+  delete local_memstore; local_memstore = NULL;
+  for (std::vector<SessionStore*>::iterator it = remote_session_stores.begin();
+       it != remote_session_stores.end();
+       ++it)
+  {
+    delete *it;
+  }
+  remote_session_stores.clear();
+  for (std::vector<Store*>::iterator it = remote_memstores.begin();
+       it != remote_memstores.end();
+       ++it)
+  {
+    delete *it;
+  }
+  remote_memstores.clear();
+  delete astaire_resolver; astaire_resolver = NULL;
+
+  hc->stop_thread();
+  delete exception_handler; exception_handler = NULL;
+  delete hc; hc = NULL;
+  delete http_stack; http_stack = NULL;
+
+  // Delete Ralf's alarm objects
+  delete cdf_comm_monitor;
+  delete chronos_comm_monitor;
+  delete astaire_comm_monitor;
+  delete remote_astaire_comm_monitor;
+  delete alarm_manager;
 
   signal(SIGTERM, SIG_DFL);
   sem_destroy(&term_sem);

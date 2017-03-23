@@ -1,6 +1,6 @@
-# Top level Makefile for building homestead
+# Top level Makefile for building ralf
 
-# this should come first so make does the right thing by default
+# This should come first so make does the right thing by default
 all: build
 
 ROOT ?= ${PWD}
@@ -10,13 +10,15 @@ INSTALL_DIR ?= ${PREFIX}
 MODULE_DIR := ${ROOT}/modules
 
 DEB_COMPONENT := ralf
-DEB_MAJOR_VERSION := 1.0${DEB_VERSION_QUALIFIER}
-DEB_NAMES := ralf ralf-dbg ralf-libs ralf-libs-dbg
+DEB_MAJOR_VERSION ?= 1.0${DEB_VERSION_QUALIFIER}
+DEB_NAMES := ralf-libs ralf-libs-dbg
+DEB_NAMES += ralf ralf-dbg
+DEB_NAMES += ralf-node ralf-node-dbg
 
 INCLUDE_DIR := ${INSTALL_DIR}/include
 LIB_DIR := ${INSTALL_DIR}/lib
 
-SUBMODULES := c-ares libevhtp libmemcached freeDiameter sas-client jsoncpp
+SUBMODULES := c-ares libevhtp libmemcached freeDiameter sas-client
 
 include $(patsubst %, ${MK_DIR}/%.mk, ${SUBMODULES})
 include ${MK_DIR}/ralf.mk
@@ -25,7 +27,9 @@ build: ${SUBMODULES} ralf
 
 test: ${SUBMODULES} ralf_test
 
-testall: $(patsubst %, %_test, ${SUBMODULES}) test
+full_test: ${SUBMODULES} ralf_full_test
+
+testall: $(patsubst %, %_test, ${SUBMODULES}) full_test
 
 clean: $(patsubst %, %_clean, ${SUBMODULES}) ralf_clean
 	rm -rf ${ROOT}/usr

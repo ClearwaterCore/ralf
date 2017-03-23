@@ -16,18 +16,12 @@
 [submodule "modules/libmemcached"]
 	path = modules/libmemcached
 	url = git@github.com:ClearwaterCore/libmemcached-upstream.git
-[submodule "modules/libevent"]
-	path = modules/libevent
-	url = git@github.com:libevent/libevent.git
 [submodule "modules/gmock"]
 	path = modules/gmock
 	url = git@github.com:ClearwaterCore/gmock-upstream.git
 [submodule "modules/sas-client"]
 	path = modules/sas-client
 	url = https://github.com/ClearwaterCore/sas-client.git
-[submodule "modules/jsoncpp"]
-	path = modules/jsoncpp
-	url = git@github.com:ClearwaterCore/jsoncpp-upstream.git
 [submodule "modules/gcovr"]
 	path = modules/gcovr
 	url = git@github.com:gcovr/gcovr.git

@@ -38,22 +38,38 @@
 
 # Set up the monit configuration for ralf with the right IP addresses and ports
 cat > /etc/monit/conf.d/ralf.monit <<EOF
-# Poll every 10 seconds
-set daemon 10
+# Check the Ralf process.
 
-# Check the server's public interfaces.  We put this first so that we process
-# failed polls (and maybe kill the server) before we process the restart.
+# Monitor the service's PID file and memory use.
+check process ralf_process with pidfile /var/run/ralf/ralf.pid
+  group ralf 
+
+  # The start, stop and restart commands are linked to alarms
+  start program = "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf start'"
+  stop program = "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf stop'"
+  restart program = "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf restart'"
+
+  # Check the service's resource usage, and abort the process if it's too high. This will
+  # generate a core file and trigger diagnostics collection.
+  if memory > 80% for 6 cycles then exec "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf abort'"
+
+# Clear any alarms if the process has been running long enough.
+check program ralf_uptime with path /usr/share/clearwater/infrastructure/monit_uptime/check-ralf-uptime
+  group ralf
+  depends on ralf_process
+  every 3 cycles
+  if status != 0 then alert
+
+# Check the HTTP interface. This depends on the Ralf process (and so won't run
+# unless the Ralf process is running)
 check program poll_ralf with path "/usr/share/clearwater/bin/poll_ralf.sh"
-  if status != 0 for 2 cycles then exec "/etc/init.d/ralf abort"
+  group ralf
+  depends on ralf_process
 
-# Monitor the server's PID file and check its public interfaces.
-check process ralf pidfile /var/run/ralf.pid
-  start program = "/etc/init.d/ralf start"
-  stop program = "/etc/init.d/ralf stop"
-#  if failed host $local_ip port 80 type TCP protocol http
-#    and use the request "/ping" then exec "/etc/init.d/ralf abort-restart"
+  # Aborting generates a core file and triggers diagnostic collection.
+  if status != 0 for 2 cycles then exec "/bin/bash -c '/usr/share/clearwater/bin/issue-alarm monit 2000.3; /etc/init.d/ralf abort'"
 EOF
 chmod 0644 /etc/monit/conf.d/ralf.monit
 
 # Force monit to reload its configuration
-service monit reload
+reload clearwater-monit || true

@@ -51,7 +51,7 @@ class RfTest : public ::testing::Test
   {
     _real_stack = Diameter::Stack::get_instance();
     _real_stack->initialize();
-    _real_stack->configure(UT_DIR + "/diameterstack.conf");
+    _real_stack->configure(UT_DIR + "/diameterstack.conf", NULL);
     _dict = new Rf::Dictionary();
   }
 
@@ -110,7 +110,7 @@ TEST_F(RfTest, CreateMessageTest)
 
   Rf::AccountingRequest acr = Rf::AccountingRequest(_dict,
                                                     _real_stack,
-                                                    "session-id",
+                                                    "example-session-id",
                                                     "host.example.com",
                                                     "realm.example.com",
                                                     3u,

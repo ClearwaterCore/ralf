@@ -37,24 +37,29 @@
 #define SESSION_MANAGER_HPP_
 
 #include "message.hpp"
-#include "sessionstore.h"
+#include "session_store.h"
 #include "chronosconnection.h"
 #include "rf.h"
+#include "health_checker.h"
 
 class PeerMessageSenderFactory;
 
 class SessionManager
 {
 public:
-  SessionManager(SessionStore* store,
+  SessionManager(SessionStore* local_store,
+                 std::vector<SessionStore*> remote_stores,
                  Rf::Dictionary* dict,
                  PeerMessageSenderFactory* factory,
                  ChronosConnection* timer_conn,
-                 Diameter::Stack* diameter_stack): _store(store),
-                                                   _timer_conn(timer_conn),
-                                                   _dict(dict),
-                                                   _factory(factory),
-                                                   _diameter_stack(diameter_stack) {};
+                 Diameter::Stack* diameter_stack,
+                 HealthChecker* hc): _local_store(local_store),
+                                     _remote_stores(remote_stores),
+                                     _timer_conn(timer_conn),
+                                     _dict(dict),
+                                     _factory(factory),
+                                     _diameter_stack(diameter_stack),
+                                     _health_checker(hc) {};
   ~SessionManager() {};
   void handle(Message* msg);
   void on_ccf_response (bool accepted, uint32_t interim_interval, std::string session_id, int rc, Message* msg);
@@ -68,12 +73,17 @@ private:
                            const std::string& callback_uri,
                            const std::string& opaque_data,
                            SAS::TrailId trail);
+  void sas_log_ccf_response(bool accepted,
+                            const std::string& session_id,
+                            Message* msg);
 
-  SessionStore* _store;
+  SessionStore* _local_store;
+  std::vector<SessionStore*> _remote_stores;
   ChronosConnection* _timer_conn;
   Rf::Dictionary* _dict;
   PeerMessageSenderFactory* _factory;
   Diameter::Stack* _diameter_stack;
+  HealthChecker* _health_checker;
 };
 
 #endif /* SESSION_MANAGER_HPP_ */

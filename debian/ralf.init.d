@@ -1,6 +1,6 @@
 #! /bin/sh
 
-# @file homestead.init.d
+# @file ralf.init.d
 #
 # Project Clearwater - IMS in the Cloud
 # Copyright (C) 2013  Metaswitch Networks Ltd
@@ -35,13 +35,13 @@
 # as those licenses appear in the file LICENSE-OPENSSL.
 
 ### BEGIN INIT INFO
-# Provides:          homestead
+# Provides:          ralf
 # Required-Start:    $remote_fs $syslog clearwater-infrastructure
 # Required-Stop:     $remote_fs $syslog
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: Clearwater Homestead
-# Description:       Clearwater Homestead HSS Cache/Gateway
+# Short-Description: Clearwater Ralf
+# Description:       Clearwater CTF Ralf
 ### END INIT INFO
 
 # Author: Mike Evans <mike.evans@metaswitch.com>
@@ -56,7 +56,7 @@ PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DESC="Clearwater CTF"
 NAME=ralf
 EXECNAME=ralf
-PIDFILE=/var/run/$NAME.pid
+PIDFILE=/var/run/$NAME/$NAME.pid
 DAEMON=/usr/share/clearwater/bin/ralf
 HOME=/etc/clearwater
 log_directory=/var/log/$NAME
@@ -76,42 +76,96 @@ log_directory=/var/log/$NAME
 . /lib/lsb/init-functions
 
 #
+# Function to set up environment
+#
+setup_environment()
+{
+        export LD_LIBRARY_PATH=/usr/share/clearwater/ralf/lib
+        ulimit -Hn 1000000
+        ulimit -Sn 1000000
+        ulimit -c unlimited
+        # enable gdb to dump a parent ralf process's stack
+        echo 0 > /proc/sys/kernel/yama/ptrace_scope
+}
+
+#
 # Function to pull in settings prior to starting the daemon
 #
 get_settings()
 {
-  # Set up defaults and then pull in the settings for this node.
-  sas_server=0.0.0.0
-  num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
-  . /etc/clearwater/config
+        # Set up defaults and then pull in the settings for this node.
+        sas_server=0.0.0.0
+        signaling_dns_server=127.0.0.1
+        num_http_threads=$(($(grep processor /proc/cpuinfo | wc -l) * 50))
+        log_level=2
+        . /etc/clearwater/config
 
-  # Set up a default cluster_settings file if it does not exist.
-  [ -f /etc/clearwater/cluster_settings ] || echo "servers=$local_ip:11211" > /etc/clearwater/cluster_settings
+        # Work out which features are enabled.
+        if [ -d /etc/clearwater/features.d ]
+        then
+          for file in $(find /etc/clearwater/features.d -type f)
+          do
+            [ -r $file ] && . $file
+          done
+        fi
+}
 
-  # If the remote cluster settings file exists then start sprout with geo-redundancy enabled
-  [ -f /etc/clearwater/remote_cluster_settings ] && remote_memstore_arg="--remote-memstore /etc/clearwater/remote_cluster_settings"
+#
+# Function to get the arguments to pass to the process
+#
+get_daemon_args()
+{
+        # Get the settings
+        get_settings
 
-  # Set up defaults for user settings then pull in any overrides.
-  log_level=2
-  [ -r /etc/clearwater/user_settings ] && . /etc/clearwater/user_settings
+        # Set the destination realm correctly
+        if [ ! -z $billing_realm ]
+        then
+          billing_realm_arg="--billing-realm=$billing_realm"
+        elif [ ! -z $home_domain ]
+        then
+          billing_realm_arg="--billing-realm=$home_domain"
+        fi
 
-  # Work out which features are enabled.
-  if [ -d /etc/clearwater/features.d ]
-  then
-    for file in $(find /etc/clearwater/features.d -type f)
-    do
-      [ -r $file ] && . $file
-    done
-  fi
+        [ "$sas_use_signaling_interface" != "Y" ] || sas_signaling_if_arg="--sas-use-signaling-interface"
 
-  # Set the destination realm correctly
-  if [ ! -z $billing_realm ]
-  then
-    billing_realm="--billing-realm $billing_realm"
-  elif [ ! -z $home_domain ]
-  then
-    billing_realm="--billing-realm $home_domain"
-  fi
+        [ -z "$target_latency_us" ] || target_latency_us_arg="--target-latency-us=$target_latency_us"
+        [ -z "$max_tokens" ] || max_tokens_arg="--max-tokens=$max_tokens"
+        [ -z "$init_token_rate" ] || init_token_rate_arg="--init-token-rate=$init_token_rate"
+        [ -z "$min_token_rate" ] || min_token_rate_arg="--min-token-rate=$min_token_rate"
+        [ -z "$exception_max_ttl" ] || exception_max_ttl_arg="--exception-max-ttl=$exception_max_ttl"
+        [ -z "$cdf_identity" ] || billing_peer_arg="--billing-peer=$cdf_identity"
+        [ -z $signaling_namespace ] || namespace_prefix="ip netns exec $signaling_namespace"
+        [ -z "$local_site_name" ] || local_site_name_arg="--local-site-name=$local_site_name"
+        [ -z "$chronos_hostname" ] || chronos_hostname_arg="--chronos-hostname=$chronos_hostname"
+        [ -z "$ralf_chronos_callback_uri" ] || ralf_chronos_callback_uri_arg="--ralf-chronos-callback-uri=$ralf_chronos_callback_uri"
+        [ -z "$ralf_hostname" ] || ralf_hostname_arg="--ralf-hostname=$ralf_hostname"
+
+        DAEMON_ARGS="--localhost=$local_ip
+                     $local_site_name_arg
+                     --http=$local_ip
+                     --http-threads=$num_http_threads
+                     --session-stores=$ralf_session_store
+                     --access-log=$log_directory
+                     --dns-servers=$signaling_dns_server
+                     --log-file=$log_directory
+                     --log-level=$log_level
+                     $chronos_hostname_arg
+                     $ralf_chronos_callback_uri_arg
+                     $ralf_hostname_arg
+                     $billing_realm_arg
+                     $billing_peer_arg
+                     $target_latency_us_arg
+                     $max_tokens_arg
+                     $init_token_rate_arg
+                     $min_token_rate_arg
+                     $exception_max_ttl_arg
+                     $sas_signaling_if_arg
+                     --sas=$sas_server,$NAME@$public_hostname"
+
+        [ "$http_blacklist_duration" = "" ]     || DAEMON_ARGS="$DAEMON_ARGS --http-blacklist-duration=$http_blacklist_duration"
+        [ "$diameter_blacklist_duration" = "" ] || DAEMON_ARGS="$DAEMON_ARGS --diameter-blacklist-duration=$diameter_blacklist_duration"
+        [ "$astaire_blacklist_duration" = "" ]  || DAEMON_ARGS="$DAEMON_ARGS --astaire-blacklist-duration=$astaire_blacklist_duration"
 }
 
 #
@@ -123,27 +177,17 @@ do_start()
         #   0 if daemon has been started
         #   1 if daemon was already running
         #   2 if daemon could not be started
+
+        # Allow us to write to the pidfile directory
+        install -m 755 -o $NAME -g root -d /var/run/$NAME && chown -R $NAME /var/run/$NAME
+
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
                 || return 1
 
         # daemon is not running, so attempt to start it.
-        export LD_LIBRARY_PATH=/usr/share/clearwater/ralf/lib
-        ulimit -Hn 1000000
-        ulimit -Sn 1000000
-        ulimit -c unlimited
-        # enable gdb to dump a parent homestead process's stack
-        echo 0 > /proc/sys/kernel/yama/ptrace_scope
-        get_settings
-        DAEMON_ARGS="--localhost $local_ip
-                     --http $local_ip
-                     --http-threads $num_http_threads
-                     -a $log_directory
-                     -F $log_directory
-                     -L $log_level
-                     $billing_realm
-                     --sas $sas_server,$NAME@$public_hostname"
-
-        start-stop-daemon --start --quiet --background --make-pidfile --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS \
+        setup_environment
+        get_daemon_args
+        $namespace_prefix start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS --daemon --pidfile=$PIDFILE \
                 || return 2
         # Add code here, if necessary, that waits for the process to be ready
         # to handle requests from services started subsequently which depend
@@ -162,18 +206,21 @@ do_stop()
         #   other if a failure occurred
         start-stop-daemon --stop --quiet --retry=TERM/30/KILL/5 --pidfile $PIDFILE --name $EXECNAME
         RETVAL="$?"
-        [ "$RETVAL" = 2 ] && return 2
-        # Wait for children to finish too if this is a daemon that forks
-        # and if the daemon is only ever run from this initscript.
-        # If the above conditions are not satisfied then add some other code
-        # that waits for the process to drop all resources that could be
-        # needed by services started subsequently.  A last resort is to
-        # sleep for some time.
-        #start-stop-daemon --stop --quiet --oknodo --retry=0/30/KILL/5 --exec $DAEMON
-        [ "$?" = 2 ] && return 2
-        # Many daemons don't delete their pidfiles when they exit.
-        rm -f $PIDFILE
         return "$RETVAL"
+}
+
+#
+# Function that runs the daemon/service in the foreground
+#
+do_run()
+{
+        # Allow us to write to the pidfile directory
+        install -m 755 -o $NAME -g root -d /var/run/$NAME && chown -R $NAME /var/run/$NAME
+
+        setup_environment
+        get_daemon_args
+        $namespace_prefix start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --chuid $NAME --chdir $HOME -- $DAEMON_ARGS --pidfile=$PIDFILE \
+                || return 2
 }
 
 #
@@ -191,9 +238,11 @@ do_abort()
         #   other if a failure occurred
         start-stop-daemon --stop --quiet --retry=ABRT/60/KILL/5 --pidfile $PIDFILE --name $EXECNAME
         RETVAL="$?"
-        [ "$RETVAL" = 2 ] && return 2
-        # Many daemons don't delete their pidfiles when they exit.
-        rm -f $PIDFILE
+        # If the abort failed, it may be because the PID in PIDFILE doesn't match the right process
+        # In this window condition, we may not recover, so remove the PIDFILE to get it running
+        if [ $RETVAL != 0 ]; then
+          rm -f $PIDFILE
+        fi
         return "$RETVAL"
 }
 
@@ -210,7 +259,7 @@ do_reload() {
         return 0
 }
 
-# There should only be at most one homestead process, and it should be the one in /var/run/homestead.pid.
+# There should only be at most one ralf process, and it should be the one in /var/run/ralf.pid.
 # Sanity check this, and kill and log any leaked ones.
 if [ -f $PIDFILE ] ; then
   leaked_pids=$(pgrep -f "^$DAEMON" | grep -v $(cat $PIDFILE))
@@ -219,7 +268,7 @@ else
 fi
 if [ -n "$leaked_pids" ] ; then
   for pid in $leaked_pids ; do
-    logger -p daemon.error -t $NAME Found leaked homestead $pid \(correct is $(cat $PIDFILE)\) - killing $pid
+    logger -p daemon.error -t $NAME Found leaked ralf $pid \(correct is $(cat $PIDFILE)\) - killing $pid
     kill -9 $pid
   done
 fi
@@ -236,6 +285,14 @@ case "$1" in
   stop)
         [ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "$NAME"
         do_stop
+        case "$?" in
+                0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
+                2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
+        esac
+        ;;
+  run)
+        [ "$VERBOSE" != no ] && log_daemon_msg "Running $DESC" "$NAME"
+        do_run
         case "$?" in
                 0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
                 2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
@@ -296,8 +353,7 @@ case "$1" in
         esac
         ;;
   *)
-        #echo "Usage: $SCRIPTNAME {start|stop|restart|reload|force-reload}" >&2
-        echo "Usage: $SCRIPTNAME {start|stop|status|restart|force-reload}" >&2
+        echo "Usage: $SCRIPTNAME {start|stop|run|status|reload|force-reload|restart|abort|abort-restart}" >&2
         exit 3
         ;;
 esac
