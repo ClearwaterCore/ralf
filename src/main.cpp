@@ -75,6 +75,7 @@ enum OptionTypes
   BILLING_PEER,
   HTTP_BLACKLIST_DURATION,
   DIAMETER_BLACKLIST_DURATION,
+  DNS_TIMEOUT,
   SAS_USE_SIGNALING_IF,
   PIDFILE,
   DAEMON,
@@ -113,6 +114,7 @@ struct options
   int exception_max_ttl;
   int http_blacklist_duration;
   int diameter_blacklist_duration;
+  int dns_timeout;
   std::string pidfile;
   bool daemon;
   bool sas_signaling_if;
@@ -143,6 +145,7 @@ const static struct option long_opt[] =
   {"exception-max-ttl",           required_argument, NULL, EXCEPTION_MAX_TTL},
   {"http-blacklist-duration",     required_argument, NULL, HTTP_BLACKLIST_DURATION},
   {"diameter-blacklist-duration", required_argument, NULL, DIAMETER_BLACKLIST_DURATION},
+  {"dns-timeout",                 required_argument, NULL, DNS_TIMEOUT},
   {"pidfile",                     required_argument, NULL, PIDFILE},
   {"daemon",                      no_argument,       NULL, DAEMON},
   {"sas-use-signaling-interface", no_argument,       NULL, SAS_USE_SIGNALING_IF},
@@ -185,6 +188,8 @@ void usage(void)
        "                            Target latency above which throttling applies (default: 100000)\n"
        "     --max-tokens N         Maximum number of tokens allowed in the token bucket (used by\n"
        "                            the throttling code (default: 1000))\n"
+       "     --dns-timeout <milliseconds>\n"
+       "                            The amount of time to wait for a DNS response (default: 200)n"
        "     --init-token-rate N    Initial token refill rate of tokens in the token bucket (used by\n"
        "                            the throttling code (default: 100.0))\n"
        "     --min-token-rate N     Minimum token refill rate of tokens in the token bucket (used by\n"
@@ -404,6 +409,11 @@ int init_options(int argc, char**argv, struct options& options)
                options.diameter_blacklist_duration);
       break;
 
+      case DNS_TIMEOUT:
+        options.dns_timeout = atoi(optarg);
+        TRC_INFO("DNS timeout set to %d", options.dns_timeout);
+        break;
+
     case PIDFILE:
       options.pidfile = std::string(optarg);
       break;
@@ -494,6 +504,7 @@ int main(int argc, char**argv)
   options.exception_max_ttl = 600;
   options.http_blacklist_duration = HttpResolver::DEFAULT_BLACKLIST_DURATION;
   options.diameter_blacklist_duration = DiameterResolver::DEFAULT_BLACKLIST_DURATION;
+  options.dns_timeout = DnsCachedResolver::DEFAULT_TIMEOUT;
   options.pidfile = "";
   options.daemon = false;
   options.sas_signaling_if = false;
@@ -659,7 +670,8 @@ int main(int argc, char**argv)
   PeerMessageSenderFactory* factory = new PeerMessageSenderFactory(options.billing_realm);
 
   // Create a DNS resolver.  We'll use this both for HTTP and for Diameter.
-  DnsCachedResolver* dns_resolver = new DnsCachedResolver(options.dns_servers);
+  DnsCachedResolver* dns_resolver = new DnsCachedResolver(options.dns_servers,
+                                                          options.dns_timeout);
 
   // Create a connection to Chronos.
   std::string port_str = std::to_string(options.http_port);
